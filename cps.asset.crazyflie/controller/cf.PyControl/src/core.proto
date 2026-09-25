@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package org.swarmwalker.messages;
+
+
+enum Unit {
+  Millimeter = 0;
+  Centimeter = 1;
+  Meter = 2;
+}
+
+
+enum Type {
+  Cartesian = 0;
+  Quaternion = 1;
+}
+
+
+message Size {
+  Unit unit = 1;      // 单位
+  float width = 2;    // 宽度
+  float length = 3;   // 长度
+  float height = 4;   // 高度
+}
+
+
+message Pose {
+  Type type = 1;      // 坐标类型
+  float x = 2;        // X坐标
+  float y = 3;        // Y坐标
+  float z = 4;        // Z坐标
+  float w = 5;        // 四元数W分量
+}

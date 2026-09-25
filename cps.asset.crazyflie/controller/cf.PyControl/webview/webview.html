@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="Webview" content="width=device-width, initial-scale=1.0">
+    <title>UAV Statemachine Webview</title>
+    <link rel="stylesheet" href="res/style.css">
+    <script type="text/javascript" src="js/WebView.js"></script>
+</head>
+
+<body>
+    <h1 id="droneTitle">UAV State Machine</h1>
+    <table>
+        <tr>
+            <td> <button id="button_start_stop">&nbsp;Start Update&nbsp;</button> </td>
+            <td> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; </td>
+            <td> <textarea id="text_infos_output">Infos...</textarea> </td>
+        </tr>
+    </table>
+    
+    <script>
+        // 在页面加载时设置标题
+        document.addEventListener('DOMContentLoaded', function() {
+            const webview = new WebView();
+            document.getElementById('droneTitle').textContent = `UAV State Machine - ${webview.droneId}`;
+        });
+    </script>
+</body>
+
+</html>
