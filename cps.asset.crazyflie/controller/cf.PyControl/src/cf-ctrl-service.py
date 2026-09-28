@@ -184,31 +184,31 @@ def cleanup():
     except:
         print(f"--[{drone.get_current_state()}] Quitting program: exception when stopping motor")
 
-###################################主函数运行顺序###################################
-# 1. 基础设置
-# - 解析参数
-# - 设置日志
-# - 创建状态机
+################################### Main function order of execution ###################################
+# 1. Basic setup
+#    - parse the arguments
+#    - configure logging
+#    - create the state machine
 
-# 2. 驱动初始化
-# - 设置重试参数
-# - 初始化驱动
+# 2. Driver initialisation
+#    - set the retry parameters
+#    - initialise the drivers
 
-# 3. URI设置
-# - 获取无人机地址
+# 3. URI setup
+#    - resolve the drone address
 
-# 4. 状态机转换
-# - 安装软件
-# - 启动状态机
+# 4. State-machine transitions
+#    - install the software
+#    - start the state machine
 
-# 5. Flask服务器
-# - 创建应用
-# - 启动服务
+# 5. Flask server
+#    - create the application
+#    - start the service
 
-# 6. 无人机连接
-# - 建立连接
-# - 配置参数
-# - 设置策略
+# 6. Drone connection
+#    - open the connection
+#    - configure the parameters
+#    - set the strategy
 
 if __name__ == '__main__':
     parser = create_arg_parser()
@@ -227,13 +227,13 @@ if __name__ == '__main__':
 
     # Instantiate the state machine
     uav_name = "uav1"
-    drone = cf_sm.StateMachineDrone(drone_id=uav_name, debug=True)  # 强制设置debug=True
-    # 生成当前状态下的状态机可视化图表
+    drone = cf_sm.StateMachineDrone(drone_id=uav_name, debug=True)  # force debug=True
+    # Render the state-machine diagram for the current state
     drone.writeSMGraph()
     print(f"--[{drone.get_current_state()}] cflib.crtp.init_drivers() ...")
     print(f"--[{drone.get_current_state()}] SIM_MODE = {SIM_MODE}")
     # Initialize the low-level drivers
-    # 设置重试次数
+    # Set the retry count
     cflib.crtp.radiodriver.set_retries_before_disconnect(1500)
     cflib.crtp.radiodriver.set_retries(3)
     if(SIM_MODE):
@@ -241,14 +241,14 @@ if __name__ == '__main__':
     else:
         cflib.crtp.init_drivers()
     
-    # 设置无人机URI
+    # Set the drone URI
     URI = None
     if args.uri:
-        # 如果指定了URI，使用指定的URI
+        # Use the URI if one was given
         cfURI = args.uri
         URI = uri_helper.uri_from_env(default=cfURI)
     else:
-        # 如果未指定URI，扫描所有接口
+        # Otherwise scan every interface
         print("No CF URI specified. Scanning interfaces now ...")
         found = False
         for a in range(7):
@@ -256,11 +256,11 @@ if __name__ == '__main__':
             if(len(available) > 0):
                 print('Crazyflies found %s ... taking first one:' % len(available))
                 for i in available:
-                    # 将接口地址转换为URI格式
+                    # Convert the interface address to URI form
                     URI = uri_helper.uri_from_env(default=i[0])
                     print(i[0])
                     found = True
-                    break # 找到第一个就退出内层循环
+                    break  # stop at the first match
             if(found): break
         if(found == False): 
             print("No interfaces found ...")
@@ -272,7 +272,7 @@ if __name__ == '__main__':
     drone.install()
     drone.writeSMGraph() 
 
-    #TODO wrap in lambda function: tryRepeat(lambda: Function(Void) -> {}, maxFailCnt) # 尝试启动，最多重试3次
+    #TODO wrap in lambda function: tryRepeat(lambda: Function(Void) -> {}, maxFailCnt) # try to start, retrying at most 3 times
     failCnt = 0;
     failCntMax = 3;
     while(drone.current_state != drone.starting):
@@ -294,15 +294,15 @@ if __name__ == '__main__':
     app = Flask(__name__)
     app.register_blueprint(drone_blueprint)  # Register the blueprint with the app
     app.config['DRONE'] = drone
-    # 配置静态文件目录
+    # Configure the static-file directory
     app.static_folder = '../webview'
     app.static_url_path = ''
-    # Register the request callback. 当调用服务时，Flask会自动执行所有注册的回调
+    # Register the request callback. Flask runs every registered callback when the service is called.
     app.after_request(after_request_callback)
     app.before_request(before_request_callback) # app.before_request(lambda: before_request_callback(callback_argument))
     # Register the custom converter
     app.url_map.converters['float'] = FloatConverter
-    # 启动Flask app
+    # Start the Flask app
     flask_thread = threading.Thread(target=start_flask_app, args=(app, args.host, args.port))
     flask_thread.daemon = True # Allows the thread to exit when the main program does
     flask_thread.start()
@@ -310,7 +310,7 @@ if __name__ == '__main__':
     flask_started.wait()
     print(f"--[{drone.get_current_state()}] Flask WebServer started [OK]")
 
-    #TODO tryRepeat(lambda: ) 我放到了上面来，放到下面有bug无法转换进入，什么原因？
+    #TODO tryRepeat(lambda: ) was moved above; placing it below triggers a bug where the transition never happens - reason unknown
     drone.initialize()
     drone.writeSMGraph()
     print(f"--[{drone.get_current_state()}] Hardware checks completed.")
@@ -319,13 +319,13 @@ if __name__ == '__main__':
     # "Main Loop"
     print(f"--[{drone.get_current_state()}] Connecting to drone now ...")
     
-    # 创建策略实例
+    # Create the strategy instance
     print("\n=== Creating Drone Operation Implementation ===")
     print(f"DEBUG mode: {DEBUG}")
-    droneOpsImpl = HlCommanderCFOperationImpl(scf=None, controller=None, debug=True)  # 先创建实例，scf设为None
+    droneOpsImpl = HlCommanderCFOperationImpl(scf=None, controller=None, debug=True)  # create the instance first, with scf set to None
     print(f"Created droneOpsImpl: {droneOpsImpl}")
     
-    # 设置到状态机
+    # Attach it to the state machine
     print("\n=== Setting uavOpStrategyImpl to State Machine ===")
     print(f"Current drone state: {drone.get_current_state()}")
     drone.set_uavOpsImpl(droneOpsImpl)
@@ -334,10 +334,10 @@ if __name__ == '__main__':
     print("=== End of Implementation Setup ===\n")
     
     with SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache')) as scf:
-        # 更新策略实例的scf
+        # Update the scf of the strategy instance
         print("\n=== Updating Drone Operation Implementation with scf ===")
         droneOpsImpl._scf = scf
-        #droneOpsImpl.scf = scf  如果scf有问题记得改回来，和cf_drone_ops中的def isSetSCF(self)对应
+        #droneOpsImpl.scf = scf  # restore this if scf misbehaves; it pairs with isSetSCF(self) in cf_drone_ops
         print(f"Updated droneOpsImpl with scf: {droneOpsImpl}")
         print(f"scf: {scf}")
         print("=== End of scf Update ===\n")
@@ -386,8 +386,8 @@ if __name__ == '__main__':
         scf.cf.log.add_config(logConfig_Acc)
         logConfig_Acc.start() # Start logging
 
-        # 等待状态机转换到ACTIVE状态
-        max_wait_time = 5  # 最大等待时间5秒
+        # Wait for the state machine to reach the ACTIVE state
+        max_wait_time = 5  # maximum wait of 5 seconds
         start_time = time.time()
         while drone.current_state != drone.active:
             if time.time() - start_time > max_wait_time:
@@ -410,10 +410,10 @@ if __name__ == '__main__':
         print(f"--[{drone.get_current_state()}] http://{args.host}:{args.port}/routes")
         
         try:
-            # Keep the main thread alive to keep the Crazyflie connection open 让主线程卡在while循环不退出
-            # 其他线程可以在这个时候执行：
-            # 处理HTTP请求
-            # 处理WebSocket数据
+            # Keep the main thread alive in this while loop so the Crazyflie connection stays open
+            # Meanwhile the other threads can run:
+            #   - handle HTTP requests
+            #   - handle WebSocket data
             while ISRUNNING:
                 time.sleep(0.1)
         except KeyboardInterrupt:

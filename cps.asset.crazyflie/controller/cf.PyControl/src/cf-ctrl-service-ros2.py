@@ -35,12 +35,12 @@ from scipy.spatial.transform import Rotation as R
 from wall_following import WallFollowingConfig, WallFollowingOrchestrator
 #################################################################################
 
-# 全局变量
+# Global variables
 websocketserver_started = threading.Event()
 flask_started = threading.Event()
 ISRUNNING = True
 
-# 多机支持：log_values为dict，key为drone_id
+# Multi-drone support: log_values is a dict keyed by drone_id
 log_values = {}
 
 def LOG(msg: str):
@@ -82,7 +82,7 @@ async def send_pos_data(websocket, path, wsrate_ms=1000):
     while True:
         data = {
             "message": "crazyflie_position",
-            "value": log_values,  # 推送所有无人机数据
+            "value": log_values,  # push the data of every drone
         }
         await websocket.send(json.dumps(data))
         await asyncio.sleep(wsrate_ms / 1000)
@@ -99,7 +99,7 @@ def start_websocket_server(host, port, wsrate_ms=1000):
     asyncio.set_event_loop(loop)
     loop.run_until_complete(server())
 
-##############↓↓↓↓该类是最底层实现，直接与ROS2系统通信，负责实际的硬件控制，controller是该类的实例↓↓↓↓####################
+############## This class is the lowest layer: it talks to ROS2 directly and performs the actual hardware control. `controller` is an instance of it. ####################
 
 class ROS2CrazyflieController(Node):
     def __init__(self, drone_id: str, dssim: bool = False):
@@ -109,20 +109,20 @@ class ROS2CrazyflieController(Node):
         self.dssim = dssim
         self.executor: Optional[MultiThreadedExecutor] = None
         
-        # 创建ROS2发布者和订阅者
+        # Create the ROS2 publishers and subscribers
         self.hover_pub = self.create_publisher(Hover, f'{self.namespace}/cmd_hover', 10)
         self.full_state_pub = self.create_publisher(FullState, f'{self.namespace}/cmd_full_state', 10)
         self.trajectory_pub = self.create_publisher(TrajectoryPolynomialPiece, f'{self.namespace}/cmd_trajectory', 10)
         self.velocity_pub = self.create_publisher(Twist, f'{self.namespace}/cmd_vel', 10)
         
-        # 订阅位置信息
+        # Subscribe to the position information
         self.odom_sub = self.create_subscription(
             Odometry,
             f'{self.namespace}/odom',
             self.odom_callback,
             10)
         
-        # 订阅scan数据用于调试
+        # Subscribe to the scan data, for debugging
         from sensor_msgs.msg import LaserScan
         self.scan_sub = self.create_subscription(
             LaserScan,
@@ -132,7 +132,7 @@ class ROS2CrazyflieController(Node):
         self.scan_ranges = [0.0, 0.0, 0.0, 0.0]
         self.last_scan_log_time = 0.0
         
-        # 状态订阅（假设有Status消息）
+        # Status subscription (assumes a Status message exists)
         try:
             from crazyflie_interfaces.msg import Status
             self.status_sub = self.create_subscription(
@@ -143,7 +143,7 @@ class ROS2CrazyflieController(Node):
         except ImportError:
             pass
         
-        # ds-crazyflies 模拟器中 takeoff/land/go_to/notify_setpoints_stop 是 topic，不是 service
+        # In the ds-crazyflies simulator, takeoff/land/go_to/notify_setpoints_stop are topics, not services
         if self.dssim:
             from rosidl_runtime_py.utilities import get_message
 
@@ -153,9 +153,9 @@ class ROS2CrazyflieController(Node):
                 self._GoToMsgType = get_message("crazyflie_interfaces/msg/GoTo")
             except Exception as e:
                 raise ImportError(
-                    "启用 --dssim 需要消息类型 "
+                    "Using --dssim requires the message types "
                     "`crazyflie_interfaces/msg/Takeoff`, `.../Land`, `.../GoTo`。\n"
-                    "你当前环境的 `crazyflie_interfaces` 似乎不包含这些 msg（只包含 srv）。\n"
+                    "The `crazyflie_interfaces` in your environment does not appear to contain these msg types (only srv).\n"
                 ) from e
 
             self.takeoff_pub = self.create_publisher(
@@ -175,7 +175,7 @@ class ROS2CrazyflieController(Node):
             self.go_to_client = None
             self.stop_client = None
         else:
-            # 真机 / crazyswarm2：使用 service（运行时动态解析，避免在 dssim-only 环境中 import 失败）
+            # Real hardware / crazyswarm2: use services, resolved at runtime so the import does not fail in a dssim-only environment
             from rosidl_runtime_py.utilities import get_service
 
             try:
@@ -187,10 +187,10 @@ class ROS2CrazyflieController(Node):
                 )
             except Exception as e:
                 raise ImportError(
-                    "非 --dssim 模式需要 service 类型 "
+                    "Non---dssim mode requires the service types "
                     "`crazyflie_interfaces/srv/Takeoff`, `.../Land`, `.../GoTo`, "
                     "`.../NotifySetpointsStop`。\n"
-                    "请确认已 source 包含这些 srv 的工作区（例如 crazyswarm2 / mapping_demo 的 overlay）。"
+                    "Make sure you have sourced a workspace that provides these srv types (for example the crazyswarm2 or mapping_demo overlay)."
                 ) from e
 
             self.takeoff_client = self.create_client(
@@ -209,7 +209,7 @@ class ROS2CrazyflieController(Node):
         self.wall_following_config: Optional[WallFollowingConfig] = None
         
         self.current_position = Point3D(0, 0, 0)
-        self.current_orientation = None  # 保存当前四元数
+        self.current_orientation = None  # Current quaternion
         self.is_flying = False
         self.battery = 0.0
         self.batteryState = 0
@@ -224,19 +224,19 @@ class ROS2CrazyflieController(Node):
             'battery': 0.0, 'batteryLevel': 0.0, 'batteryState': 0,
             'acc_x': 0.0, 'acc_y': 0.0, 'acc_z': 0.0,
         })
-        # 更新位置信息到log_values
+        # Write the position into log_values
         lv['x'] = msg.pose.pose.position.x
         lv['y'] = msg.pose.pose.position.y
         lv['z'] = msg.pose.pose.position.z
         
-        # ★ 关键修复：同时更新 self.current_position
+        # Important: also update self.current_position
         self.current_position.x = msg.pose.pose.position.x
         self.current_position.y = msg.pose.pose.position.y
         self.current_position.z = msg.pose.pose.position.z
         
-        # 保存当前四元数用于 FullState 控制
+        # Keep the current quaternion for FullState control
         q = msg.pose.pose.orientation
-        self.current_orientation = q  # 保存原始四元数
+        self.current_orientation = q  # keep the raw quaternion
         
         r = R.from_quat([q.x, q.y, q.z, q.w])
         roll, pitch, yaw = r.as_euler('xyz', degrees=True)
@@ -245,11 +245,11 @@ class ROS2CrazyflieController(Node):
         lv['yaw'] = yaw
 
     def scan_callback(self, msg):
-        """接收scan数据并定期输出"""
+        """Receives scan data and logs it periodically."""
         self.scan_ranges = list(msg.ranges)
         current_time = time.time()
         
-        # 每秒输出一次scan数据
+        # Log the scan data once per second
         if current_time - self.last_scan_log_time > 1.0:
             # if len(self.scan_ranges) >= 4:
             #     self.get_logger().info(
@@ -273,7 +273,7 @@ class ROS2CrazyflieController(Node):
             print(f"[{self.drone_id}] ⚠️ Battery low! Consider landing soon.")
             
     def take_off(self, velocity=0.2):
-        """起飞命令 - 异步版本（不阻塞executor）"""
+        """Take-off command, asynchronous so it does not block the executor."""
         self.get_logger().info(f'Taking off drone {self.drone_id}')
         try:
             # ds-crazyflies simulation: publish topic once (not a service)
@@ -283,7 +283,7 @@ class ROS2CrazyflieController(Node):
                 msg.height = 0.5
                 msg.duration.sec = 2
                 msg.duration.nanosec = 0
-                # yaw/use_current_yaw 可保持默认值(0/False)，也可显式设置
+                # yaw/use_current_yaw can keep their defaults (0/False) or be set explicitly
                 msg.yaw = 0.0
                 msg.use_current_yaw = False
                 self.takeoff_pub.publish(msg)
@@ -291,22 +291,22 @@ class ROS2CrazyflieController(Node):
                 self.is_flying = True
                 return True
 
-            # 创建起飞请求
+            # Build the take-off request
             request = self._TakeoffSrvType.Request()
-            request.height = 0.5  # 起飞高度
-            request.duration.sec = 2  # 持续时间
+            request.height = 0.5  # take-off altitude
+            request.duration.sec = 2  # duration
             request.duration.nanosec = 0
             
-            # 等待服务可用
+            # Wait for the service to become available
             if not self.takeoff_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().error('takeoff service not available')
                 return False
                 
-            # 异步调用服务
+            # Call the service asynchronously
             future = self.takeoff_client.call_async(request)
             
-            # ★ 关键修复：不使用spin_once，直接等待future完成
-            timeout = 5.0  # 5秒超时
+            # Important: do not use spin_once; wait for the future to complete directly
+            timeout = 5.0  # 5 second timeout
             start_time = time.time()
             
             while (time.time() - start_time) < timeout:
@@ -319,7 +319,7 @@ class ROS2CrazyflieController(Node):
                     else:
                         self.get_logger().error('Failed to send takeoff command')
                         return False
-                time.sleep(0.05)  # 短暂等待，避免占用CPU
+                time.sleep(0.05)  # short sleep, to avoid busy-waiting
                 
             self.get_logger().error('Takeoff command timed out')
             return False
@@ -328,7 +328,7 @@ class ROS2CrazyflieController(Node):
             return False
             
     def land(self):
-        """降落命令 - 异步版本（不阻塞executor）"""
+        """Landing command, asynchronous so it does not block the executor."""
         self.get_logger().info(f'Landing drone {self.drone_id}')
         try:
             # ds-crazyflies simulation: land is a topic; no need to send stop before land
@@ -345,24 +345,24 @@ class ROS2CrazyflieController(Node):
                 self.is_flying = False
                 return True
 
-            # 创建降落请求  ！！！！！！！！！！注意这里先停止了低级控制！！！！！！！！！！
+            # Build the landing request. NOTE: low-level control is stopped first.
             request = self._NotifySetpointsStopSrvType.Request() #which is indicating that we won't be sending low level commands anymore
             self.stop_client.call_async(request)
             request = self._LandSrvType.Request()
-            request.height = 0.0  # 降落高度
-            request.duration.sec = 2  # 持续时间
+            request.height = 0.0  # landing altitude
+            request.duration.sec = 2  # duration
             request.duration.nanosec = 0
             
-            # 等待服务可用
+            # Wait for the service to become available
             if not self.land_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().error('land service not available')
                 return False
                 
-            # 异步调用服务
+            # Call the service asynchronously
             future = self.land_client.call_async(request)
             
-            # ★ 关键修复：不使用spin_once，直接等待future完成
-            timeout = 5.0  # 5秒超时
+            # Important: do not use spin_once; wait for the future to complete directly
+            timeout = 5.0  # 5 second timeout
             start_time = time.time()
             
             while (time.time() - start_time) < timeout:
@@ -375,7 +375,7 @@ class ROS2CrazyflieController(Node):
                     else:
                         self.get_logger().error('Failed to send land command')
                         return False
-                time.sleep(0.05)  # 短暂等待，避免占用CPU
+                time.sleep(0.05)  # short sleep, to avoid busy-waiting
                 
             self.get_logger().error('Land command timed out')
             return False
@@ -384,22 +384,22 @@ class ROS2CrazyflieController(Node):
             return False
             
     # def stop(self):
-    #     """停止命令 - 同步版本"""
+    #     """Stop command, synchronous version."""
     #     self.get_logger().info(f'Stopping drone {self.drone_id}')
     #     try:
-    #         # 创建停止请求
+    #         # Build the stop request
     #         request = NotifySetpointsStop.Request()
             
-    #         # 等待服务可用
+    #         # Wait for the service to become available
     #         if not self.stop_client.wait_for_service(timeout_sec=1.0):
     #             self.get_logger().error('stop service not available')
     #             return False
                 
-    #         # 同步调用服务
+    #         # Call the service synchronously
     #         future = self.stop_client.call_async(request)
             
-    #         # 非阻塞轮询 - 设置超时
-    #         timeout = 5.0  # 5秒超时
+    #         # Non-blocking poll with a timeout
+    #         timeout = 5.0  # 5 second timeout
     #         start_time = time.time()
             
     #         while (time.time() - start_time) < timeout:
@@ -421,7 +421,7 @@ class ROS2CrazyflieController(Node):
     #         return False
             
     def go_to(self, x, y, z, velocity=0.1): # velocity!!!!!!
-        """导航到指定位置 - 异步版本（不阻塞executor）"""
+        """Navigates to the given position, asynchronous so it does not block the executor."""
         self.get_logger().info(f'Navigating drone {self.drone_id} to ({x}, {y}, {z})')
         try:
             # ds-crazyflies simulation: publish topic once (not a service)
@@ -440,26 +440,26 @@ class ROS2CrazyflieController(Node):
                 self.get_logger().info('GoTo topic published successfully (dssim)')
                 return True
 
-            # 创建导航请求
+            # Build the navigation request
             request = self._GoToSrvType.Request()
             request.goal.x = x
             request.goal.y = y
             request.goal.z = z
 
-            # 原本无法控制速度
-            request.duration.sec = 10 #增加时间用于降低速度
+            # Originally the speed could not be controlled
+            request.duration.sec = 10 # longer duration lowers the speed
             request.duration.nanosec = 0
 
-            # 等待服务可用
+            # Wait for the service to become available
             if not self.go_to_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().error('go_to service not available')
                 return False
                 
-            # 异步调用服务
+            # Call the service asynchronously
             future = self.go_to_client.call_async(request)
             
-            # ★ 关键修复：不使用spin_once，直接等待future完成
-            timeout = 5.0  # 5秒超时
+            # Important: do not use spin_once; wait for the future to complete directly
+            timeout = 5.0  # 5 second timeout
             start_time = time.time()
             
             while (time.time() - start_time) < timeout:
@@ -471,7 +471,7 @@ class ROS2CrazyflieController(Node):
                     else:
                         self.get_logger().error('Failed to send go to command')
                         return False
-                time.sleep(0.05)  # 短暂等待，避免占用CPU
+                time.sleep(0.05)  # short sleep, to avoid busy-waiting
                 
             self.get_logger().error('Go to command timed out')
             return False
@@ -481,9 +481,10 @@ class ROS2CrazyflieController(Node):
 
 #################################################################################
     def hover_at_position(self, x=None, y=None, z=None, yaw=0.0, emergency_stop=True):
-        """立即停止在指定高度并悬停（使用 Hover 消息持续发送）。X/Y不再强制位置，仅发送零速度。"""
+        """Stops immediately at the given altitude and hovers, by continuously publishing Hover messages.
+        X/Y are no longer forced to a position; only zero velocity is sent."""
         try:
-            # 如果提供了坐标，使用提供的坐标；否则使用当前位置
+            # Use the supplied coordinates if given, otherwise the current position
             if x is None or y is None or z is None:
                 x = self.current_position.x
                 y = self.current_position.y
@@ -492,16 +493,16 @@ class ROS2CrazyflieController(Node):
             else:
                 self.get_logger().info(f'HOVER: drone {self.drone_id} at specified position ({x:.3f}, {y:.3f}, {z:.3f})')
             
-            # 确保安全高度
-            safe_z = max(float(z), 0.5)  # 最小安全高度0.5米
+            # Enforce a safe altitude
+            safe_z = max(float(z), 0.5)  # minimum safe altitude of 0.5 m
             if safe_z != z:
                 self.get_logger().warning(f'Adjusting hover height from {z:.3f}m to safe height {safe_z:.3f}m')
                 z = safe_z
             
-            # 记录目标高度（Hover控制z）
+            # Record the target altitude (Hover controls z)
             self.hover_z = float(z)
 
-            # 停止所有定时器
+            # Stop every timer
             if hasattr(self, 'move_timer') and self.move_timer is not None:
                 self.get_logger().info(f'Stopping previous move timer')
                 self.move_timer.destroy()
@@ -511,10 +512,10 @@ class ROS2CrazyflieController(Node):
                 self.hover_timer.destroy()
                 self.hover_timer = None
 
-            # 创建定时器持续发送悬停命令（50Hz）
+            # Create a timer that keeps sending the hover command at 50 Hz
             self.hover_timer = self.create_timer(0.02, self._hover_timer_callback)
             
-            # 立即发送一次Hover指令，避免控制间隙
+            # Send one Hover command immediately, to avoid a control gap
             msg = Hover()
             msg.vx = 0.0
             msg.vy = 0.0
@@ -529,7 +530,7 @@ class ROS2CrazyflieController(Node):
             return False
     
     def _hover_timer_callback(self):
-        """悬停定时器回调，持续发送 Hover 命令（零速度，固定高度）。"""
+        """Hover timer callback: keeps sending Hover commands (zero velocity, fixed altitude)."""
         if hasattr(self, 'hover_z'):
             msg = Hover()
             msg.vx = 0.0
@@ -539,17 +540,17 @@ class ROS2CrazyflieController(Node):
             self.hover_pub.publish(msg)
 
     def move_to_position_realtime(self, x, y, z, velocity=0.2, timeout=10.0, skip_stop=False):
-        """实时移动到指定位置 - 使用 Hover 消息持续发送速度（vx, vy），并保持目标高度z。"""
+        """Moves to the given position in real time, publishing velocity (vx, vy) via Hover messages while holding the target altitude z."""
         try:
             self.get_logger().info(f'Moving drone {self.drone_id} to ({x}, {y}, {z}) in realtime with velocity={velocity}')
             
-            # 等待短暂时间，确保位置数据是最新的
+            # Short wait, so the position data is up to date
             time.sleep(0.05)
             
-            # 获取当前位置
+            # Get the current position
             start_x, start_y, start_z = self.current_position.x, self.current_position.y, self.current_position.z
             
-            # 计算移动距离
+            # Compute the movement distance
             dx = x - start_x
             dy = y - start_y
             dz = z - start_z
@@ -557,16 +558,16 @@ class ROS2CrazyflieController(Node):
             
             self.get_logger().info(f'Distance to target: {distance:.3f}m, start=({start_x:.3f},{start_y:.3f},{start_z:.3f})')
             
-            if distance < 0.05:  # 如果目标很近，直接悬停
+            if distance < 0.05:  # if the target is very close, just hover
                 self.get_logger().info(f'Target very close (distance: {distance:.3f}m), using hover instead of movement')
                 return self.hover_at_position(x, y, z, emergency_stop=False)
             
-            # 计算运动参数（速度上限0.15m/s）
+            # Compute the motion parameters (speed capped at 0.15 m/s)
             max_velocity = min(velocity, 0.2)
             start_time = time.time()
             self.get_logger().info(f'Max velocity: {max_velocity:.3f}m/s')
             
-            # 初始化移动状态（Hover控制下仅需目标与速度）
+            # Initialise the movement state (under Hover control only the target and speed are needed)
             self.move_start_time = start_time
             self.move_start_pos = (start_x, start_y, start_z)
             self.move_target_pos = (x, y, z)
@@ -574,7 +575,7 @@ class ROS2CrazyflieController(Node):
             self.move_timeout = timeout
             self.move_completed = False
             
-            # 现在安全地停止之前的定时器
+            # Now it is safe to stop the previous timer
             if hasattr(self, 'hover_timer') and self.hover_timer is not None:
                 self.get_logger().info(f'Stopping hover timer before movement')
                 self.hover_timer.destroy()
@@ -585,10 +586,10 @@ class ROS2CrazyflieController(Node):
                 self.move_timer.destroy()
                 self.move_timer = None
             
-            # 立即创建新的移动定时器，确保无缝切换
+            # Create the new movement timer immediately, for a seamless switch
             self.move_timer = self.create_timer(0.02, self._move_timer_callback)
             
-            # 立即执行一次移动回调，避免控制间隙
+            # Run the movement callback once immediately, to avoid a control gap
             try:
                 self._move_timer_callback()
             except Exception as e:
@@ -602,7 +603,7 @@ class ROS2CrazyflieController(Node):
             return False
     
     def _move_timer_callback(self):
-        """移动定时器回调：基于当前位置到目标的方向，发布 Hover 速度指令。"""
+        """Movement timer callback: publishes a Hover velocity command along the direction from the current position to the target."""
         try:
             if not hasattr(self, 'move_start_time') or self.move_completed:
                 return
@@ -610,29 +611,29 @@ class ROS2CrazyflieController(Node):
             current_time = time.time()
             elapsed_time = current_time - self.move_start_time
             
-            # 检查超时
+            # Check for a timeout
             if elapsed_time > self.move_timeout:
                 self.get_logger().warning(f'Movement timeout after {elapsed_time:.2f}s, stopping')
                 self.move_completed = True
-                # 停止移动定时器
+                # Stop the movement timer
                 if hasattr(self, 'move_timer') and self.move_timer is not None:
                     self.move_timer.destroy()
                     self.move_timer = None
-                # 悬停在当前位置
+                # Hover at the current position
                 self.hover_at_position()
                 return
             
-            # 检查当前位置
+            # Check the current position
             current_x = self.current_position.x
             current_y = self.current_position.y
             current_z = self.current_position.z
             
-            # 计算剩余距离（仅平面）
+            # Compute the remaining distance (in the horizontal plane only)
             remaining_dx = self.move_target_pos[0] - current_x
             remaining_dy = self.move_target_pos[1] - current_y
             remaining_distance_xy = math.hypot(remaining_dx, remaining_dy)
             
-            # 如果接近目标，停止移动并悬停在目标高度
+            # Close to the target: stop moving and hover at the target altitude
             if remaining_distance_xy < 0.1:
                 self.get_logger().info(f'Reached target (distance_xy: {remaining_distance_xy:.3f}m), stopping movement')
                 self.move_completed = True
@@ -642,7 +643,7 @@ class ROS2CrazyflieController(Node):
                 self.hover_at_position(z=self.move_target_pos[2])
                 return
             
-            # 计算速度方向并限幅
+            # Compute the velocity direction and clamp it
             if remaining_distance_xy > 0:
                 unit_x = remaining_dx / remaining_distance_xy
                 unit_y = remaining_dy / remaining_distance_xy
@@ -650,12 +651,12 @@ class ROS2CrazyflieController(Node):
                 unit_x = 0.0
                 unit_y = 0.0
             
-            # 到目标越近，速度线性减小（最小速度阈值）
+            # The closer to the target, the lower the speed, down to a minimum threshold
             speed = min(self.move_max_velocity, max(0.1, remaining_distance_xy))
             vx = unit_x * speed
             vy = unit_y * speed
             
-            # 发布 Hover 速度指令（保持目标高度）
+            # Publish the Hover velocity command, holding the target altitude
             msg = Hover()
             msg.vx = float(vx)
             msg.vy = float(vy)
@@ -666,16 +667,16 @@ class ROS2CrazyflieController(Node):
         except Exception as e:
             self.get_logger().error(f'Error in _move_timer_callback: {str(e)}')
             self.move_completed = True
-            # 停止移动定时器
+            # Stop the movement timer
             if hasattr(self, 'move_timer') and self.move_timer is not None:
                 self.move_timer.destroy()
                 self.move_timer = None
-            # 悬停在当前位置
+            # Hover at the current position
             self.hover_at_position()
     
 
     def start_wall_following(self, config: WallFollowingConfig) -> bool:
-        """启动墙面跟随控制。"""
+        """Starts wall-following control."""
         if self.executor is None:
             self.get_logger().error('Executor not configured, cannot start wall following')
             return False
@@ -699,15 +700,15 @@ class ROS2CrazyflieController(Node):
         executor.add_node(self)
 
     def stop(self):
-        """停止所有控制指令，包括 streaming setpoints（不阻塞executor）"""
+        """Stops every control command, including streaming setpoints, without blocking the executor."""
         self.get_logger().info(f'Stopping drone {self.drone_id} (including FullState streaming)')
         try:
-            # 先停止墙面跟随（如果正在运行）
+            # Stop wall following first, if it is running
             if self.wall_following_orchestrator is not None:
                 self.get_logger().info('Stopping wall following before stopping controller')
                 self.stop_wall_following()
             
-            # 先本地停止所有持续发送的计时器，避免继续发布Hover/FullState
+            # Stop all local repeating timers first, so no further Hover/FullState messages are published
             try:
                 if hasattr(self, 'hover_timer') and self.hover_timer is not None:
                     self.get_logger().info('Destroying hover_timer')
@@ -724,7 +725,7 @@ class ROS2CrazyflieController(Node):
             except Exception as e:
                 self.get_logger().warning(f'Error destroying timers: {str(e)}')
 
-            # 清理实时控制目标，避免回调再次访问
+            # Clear the real-time control target so the callbacks do not use it again
             for attr in ['hover_z', 'move_start_time', 'move_start_pos', 'move_target_pos', 'move_completed']:
                 if hasattr(self, attr):
                     try:
@@ -740,12 +741,12 @@ class ROS2CrazyflieController(Node):
 
             if not self.stop_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().warning('NotifySetpointsStop service not available')
-                return True  # 即使服务不可用，streaming 也已停止
+                return True  # streaming has been stopped even if the service is unavailable
                 
             request = self._NotifySetpointsStopSrvType.Request()
             future = self.stop_client.call_async(request)
             
-            # ★ 关键修复：不使用spin_once，直接等待future完成
+            # Important: do not use spin_once; wait for the future to complete directly
             timeout = 2.0
             start_time = time.time()
             
@@ -758,10 +759,10 @@ class ROS2CrazyflieController(Node):
                     else:
                         self.get_logger().error('Failed to send stop command')
                         return False
-                time.sleep(0.05)  # 短暂等待，避免占用CPU
+                time.sleep(0.05)  # short sleep, to avoid busy-waiting
                 
             self.get_logger().warning('Stop command timed out')
-            return True  # streaming 已停止，即使服务超时也返回 True
+            return True  # streaming has been stopped, so return True even if the service timed out
         except Exception as e:
             self.get_logger().error(f'Error in stop: {str(e)}')
             return False
@@ -783,91 +784,91 @@ def main():
     global DEBUG
     DEBUG = args.debug
     
-    # 设置日志级别
+    # Set the log level
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     logger = logging.getLogger(__name__)
     
-    # 添加错误处理装饰器
+    # Add the error-handling decorator
     class AppWrapper(Flask):
         def handle_exception(self, e):
-            """覆盖默认异常处理"""
+            """Overrides the default exception handling."""
             logger.error(f"Unhandled exceptions: {str(e)}", exc_info=True)
             return jsonify({"error": str(e)}), 500
             
         def handle_user_exception(self, e):
-            """覆盖用户异常处理"""
+            """Overrides the user exception handling."""
             if isinstance(e, exceptions.TransitionNotAllowed):
                 logger.error(f"state transition error: {str(e)}", exc_info=True)
                 return jsonify({"error": str(e)}), 400
             return super().handle_user_exception(e)
     
     try:
-        # 初始化ROS2
+        # Initialise ROS2
         logger.info("initializing ROS2...")
         rclpy.init(args=None)
 
         #！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
-        # 初始化ROS2CrazyflieController， controller是ROS2CrazyflieController这个ROS2节点的实例化
-        # controller实现的功能如上面的class类。ROS2CrazyflieController继承Node
+        # Initialise ROS2CrazyflieController; `controller` is the instance of that ROS2 node
+        # Its behaviour is defined by the class above. ROS2CrazyflieController extends Node.
         controller = ROS2CrazyflieController(args.drone_id, dssim=args.dssim)
         #！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
 
-        # 创建ROS2单独的线程
+        # Run ROS2 on a separate thread
         executor = MultiThreadedExecutor()
         controller.set_executor(executor)
         ros_thread = threading.Thread(target=lambda: executor.spin())
         ros_thread.daemon = True
         ros_thread.start()
         
-        # 创建状态机实例
+        # Create the state-machine instance
         logger.info("creating state machine instance...")
         drone = cf_sm.StateMachineDrone(args.drone_id, debug=args.debug)
         
-        # 设置无人机操作策略实现
+        # Set the drone operation strategy implementation
         logger.info("setting UAV operation strategy...")
         from cf_drone_ops import HlCommanderCFOperationImpl
         
         #！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
-        # 设置无人机操作策略实现，将controller传递给HlCommanderCFOperationImpl
+        # Set the drone operation strategy implementation, passing the controller to HlCommanderCFOperationImpl
         drone.set_uavOpsImpl(HlCommanderCFOperationImpl(scf=None, controller=controller, debug=DEBUG))
         #！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
         
-        # 初始化状态机
+        # Initialise the state machine
         logger.info("initializing state machine...")
         try:
             drone.install()  # INSTALLED -> RESOLVED
             logger.info("state machine installed")
-            time.sleep(0.2)  # 添加短暂延迟
+            time.sleep(0.2)  # short delay
             
             drone.start()    # RESOLVED -> STARTING
             logger.info("state machine started")
-            time.sleep(0.2)  # 添加短暂延迟
+            time.sleep(0.2)  # short delay
             
             drone.initialize()  # STARTING -> ACTIVE
             logger.info("state machine initialized")
             logger.info(f"state machine current state: {drone.get_current_state()}")
             
-            # 等待状态机完全初始化
+            # Wait for the state machine to finish initialising
             time.sleep(0.5)
             
         except Exception as e:
             logger.error(f"initializing state machine failed: {str(e)}", exc_info=True)
             raise
         
-        # 创建Flask应用
+        # Create the Flask application
         logger.info("creating Flask app...")
         app = AppWrapper(__name__)
         app.register_blueprint(drone_blueprint)
         app.config['DRONE'] = drone
         
-        # 配置静态文件目录
+        # Configure the static-file directory
         app.static_folder = '../webview'
         app.static_url_path = ''
         
-        # 添加错误处理
+        # Add error handling
         @app.errorhandler(500)
         def internal_error(error):
             logger.error(f"server internal error: {str(error)}", exc_info=True)
@@ -878,7 +879,7 @@ def main():
             logger.error(f"unhandled exception: {str(e)}", exc_info=True)
             return jsonify({"error": str(e)}), 500
         
-        # 启动Flask服务器
+        # Start the Flask server
         logger.info("starting Flask server...")
         flask_thread = threading.Thread(
             target=start_flask_app,
@@ -887,11 +888,11 @@ def main():
         flask_thread.daemon = True
         flask_thread.start()
         
-        # 等待Flask服务器启动
+        # Wait for the Flask server to start
         flask_started.wait()
         logger.info("Flask WebServer started [OK]")
         
-        # 启动WebSocket服务器（如果启用）
+        # Start the WebSocket server, if enabled
         if args.wsendpoint:
             logger.info("starting WebSocket server...")
             ws_thread = threading.Thread(
@@ -903,12 +904,12 @@ def main():
             websocketserver_started.wait()
             logger.info("WebSocket server started [OK]")
         
-        # 主循环
+        # Main loop
         logger.info("service started, press Ctrl+C to terminate...")
         try:
-            # 保持主线程运行
+            # Keep the main thread alive
             while ISRUNNING:
-                #print_log_values() //打印所有无人机的信息
+                #print_log_values()  # log the information of every drone
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("received termination signal, closing...")

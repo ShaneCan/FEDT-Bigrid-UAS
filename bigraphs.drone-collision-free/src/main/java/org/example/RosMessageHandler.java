@@ -3,7 +3,7 @@ package org.example;
 import edu.wpi.rail.jrosbridge.messages.Message;
 
 /**
- * 函数式接口，用于处理 ROS2 消息
+ * Functional interface for handling ROS2 messages
  * 
  * @author Based on streaming-bigraphs example
  */

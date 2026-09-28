@@ -73,7 +73,7 @@ public class Application3D implements CommandLineRunner {
     private static final long TAKEOFF_PROTECTION_MS = 5000;
     private static final long TAKEOFF_COOLDOWN_MS = 5000;
     private static final long WAIT_TIMEOUT_MS = 8000;
-    /** 移动超时：若发送导航指令后超过此时间仍未到达 movingToGrid，则放弃等待并从当前位置重新规划 */
+    /** Move timeout: if the drone has not reached movingToGrid within this time after the navigation command was sent, stop waiting and replan from the current position */
     private static final long MOVE_TIMEOUT_MS = 10000;
     private static final long MOVE_INTERVAL_MS = 2000;
     private static final long LANDING_DELAY_MS = 2000;
@@ -87,7 +87,7 @@ public class Application3D implements CommandLineRunner {
         store.computeIfAbsent(droneId, k -> new ConcurrentLinkedQueue<>()).add(ms);
     }
 
-    /** A* 路径规划 + 斜向/碰撞安全检查（不含 Bigraph match、预订、REST、sleep） */
+    /** A* path planning + diagonal/collision safety check (excludes bigraph match, reservation, REST and sleep) */
     private void logPlanningLatency(String droneId, String action, long startNano, long endNano) {
         double ms = elapsedMs(startNano, endNano);
         recordLatency(planningLatenciesMsByDrone, droneId, ms);
@@ -95,7 +95,7 @@ public class Application3D implements CommandLineRunner {
                 + String.format(Locale.ROOT, "%.3f", ms) + " ms");
     }
 
-    /** 仅 Bigraph match（无路径规划，不含 CDO 持久化）—— 即 FEDT runtime gate 自身的判定耗时 */
+    /** Bigraph match only (no path planning, no CDO persistence) - the decision time of the FEDT runtime gate itself */
     private void logMatchOnlyLatency(String droneId, String action, long startNano, long endNano) {
         double ms = elapsedMs(startNano, endNano);
         recordLatency(gateMatchLatenciesMsByDrone, droneId, ms);
@@ -103,7 +103,7 @@ public class Application3D implements CommandLineRunner {
                 + String.format(Locale.ROOT, "%.3f", ms) + " ms");
     }
 
-    /** REST：httpClient.send 调用前至收到响应（不含 sleep） */
+    /** REST: from the httpClient.send call until the response arrives (excludes sleep) */
     private void logRestLatency(String droneId, String action, long startNano, long endNano) {
         double ms = elapsedMs(startNano, endNano);
         recordLatency(restLatenciesMsByDrone, droneId, ms);
@@ -116,14 +116,13 @@ public class Application3D implements CommandLineRunner {
     private static final double LANDING_ALTITUDE = 0.1;
     
     // Battery thresholds (volts)
-
-    private static final double BATTERY_EMPTY_THRESHOLD = 2.1; //3.1！！！！！！！！！
-    private static final double BATTERY_LOW_THRESHOLD = 2.2; //3.2！！！！！！！！！
+    private static final double BATTERY_EMPTY_THRESHOLD = 3.1; // paper value: 3.1
+    private static final double BATTERY_LOW_THRESHOLD = 3.2;   // paper value: 3.2
 
     // RSSI threshold
-    private static final int RSSI_BAD_THRESHOLD = 85;//65！！！！！！！！！
+    private static final int RSSI_BAD_THRESHOLD = 65; // paper value: 65
 
-    // 故障注入用的合成读数（相对于上面的阈值选取，注入这些值即可触发对应的规则/应急响应）
+    // Synthetic readings for fault injection (chosen relative to the thresholds above; injecting these values triggers the corresponding rule / emergency response)
     private static final double INJECT_BATTERY_NORMAL_V = 4.0;   // >= BATTERY_LOW_THRESHOLD
     private static final double INJECT_BATTERY_LOW_V    = 3.15;  // [EMPTY, LOW) -> Low
     private static final double INJECT_BATTERY_EMPTY_V  = 3.0;  // < EMPTY     -> Empty
@@ -135,10 +134,10 @@ public class Application3D implements CommandLineRunner {
     @Value("${bigrid.service.base-url:http://127.0.0.1:7070}")
     private String bigridServiceBaseUrl;
 
-    @Value("${bigrid.service.rows:7}")
+    @Value("${bigrid.service.rows:5}")
     private int bigridRows;
 
-    @Value("${bigrid.service.cols:7}")
+    @Value("${bigrid.service.cols:5}")
     private int bigridCols;
     
     @Value("${bigrid.service.layers:3}")
@@ -147,10 +146,10 @@ public class Application3D implements CommandLineRunner {
     @Value("${bigrid.service.format:xml}")
     private String bigridFormat;
 
-    @Value("${bigrid.service.origin.x:-1.5}")
+    @Value("${bigrid.service.origin.x:-1.0}")
     private double gridOriginX;
 
-    @Value("${bigrid.service.origin.y:-1.5}")
+    @Value("${bigrid.service.origin.y:-1.0}")
     private double gridOriginY;
     
     @Value("${bigrid.service.origin.z:0.0}")
@@ -174,7 +173,7 @@ public class Application3D implements CommandLineRunner {
     @Value("${ros.update.enabled:true}")
     private boolean rosUpdateEnabled;
 
-    // 是否启用仿真模式：位置来自 /cf_positions_poses（PoseArray），而不是每个 /cfXXX/pose
+    // Whether simulation mode is enabled: positions come from /cf_positions_poses (PoseArray) instead of a per-drone /cfXXX/pose
     @Value("${ros.sim.mode:true}")
     private boolean rosSimMode;
 
@@ -186,58 +185,52 @@ public class Application3D implements CommandLineRunner {
     @Value("${drone.control.start-port:5000}")
     private int droneControlStartPort;
 
-    // 无人机目标点配置 (格式: "x1,y1;x2,y2;...")
-    @Value("${drone.targets:-1,-1.5;1,-1.5;1.5,-1;1.5,1;1,1.5;-1,1.5;-1.5,1;-1.5,-1;-1,-1;1,-1;1,1;-1,1}")
+    // Drone target-point configuration (format: "x1,y1;x2,y2;...")
+    @Value("${drone.targets:-1,-1.5;1,-1.5;1.5,-1;1.5,1;1,1.5;-1,1.5;-1.5,1;-1.5,-1}")
     private String droneTargetsConfig;
     
-    // 充电站配置（支持多个充电站，用逗号分隔，例如：3,8,13）
+    // Charging-station configuration (multiple stations, comma separated, e.g. 3,8,13)
     @Value("${charging.station.grids:3}")
     private String chargingStationGrids;
     
-    // 障碍物栅格配置（支持多个障碍物，用逗号分隔，例如：15,20,25）
-    @Value("${obstacle.grids:18,67}")
+    // Obstacle grid configuration (multiple obstacles, comma separated, e.g. 15,20,25)
+    @Value("${obstacle.grids:13,38}")
     private String obstacleGridsConfig;
 
     @Value("${baseline.mode:false}")
     private boolean baselineMode;
 
-    // 故障注入 HTTP 控制端口：运行时可随时通过 curl 让某架无人机 battery Low/Empty 或 comm Bad
+    // Fault-injection HTTP control port: at runtime, curl can put any drone into battery Low/Empty or comm Bad
     @Value("${fault.injection.enabled:true}")
     private boolean faultInjectionEnabled;
     @Value("${fault.injection.port:8090}")
     private int faultInjectionPort;
 
-    // 集体升高（Collective Ascent）：起飞后把所有无人机统一抬升到一个工作高度再开始栅格导航。
-    // 用途：满足垂直下洗流间隔（Preiss et al. IROS 2017，中心间距≥0.6m）。Crazyflie 起飞默认约0.6m，
-    // 抬升到 0.9m 后开始运行
+    // Collective ascent: after take-off, raise all drones to a common working altitude before grid navigation starts.
     @Value("${collective.ascent.enabled:true}")
     private boolean collectiveAscentEnabled;
-    // 目标绝对工作高度（米）。
+    // Target absolute working altitude (metres).
     @Value("${collective.ascent.altitude:0.9}")
     private double collectiveAscentAltitude;
-    // 等待所有无人机完成起飞的超时（毫秒）
+    // Timeout for waiting until all drones have taken off (milliseconds)
     @Value("${collective.ascent.takeoff-wait-timeout-ms:8000}")
     private long collectiveAscentTakeoffWaitMs;
-    // 发送升高指令后的稳定等待（毫秒），让 status.z 收敛到目标高度
+    // Settling wait after the ascent command is sent (milliseconds), so status.z converges to the target altitude
     @Value("${collective.ascent.settle-ms:4000}")
     private long collectiveAscentSettleMs;
 
-    // 垂直导航绝对高度模式：目标高度 = base-altitude + 目标层*layerHeight，与当前物理高度无关，
-    // 消除"相对 status.z ± layerHeight"造成的逐层漂移。推荐配合 collective.ascent 使用。
+    // Absolute-altitude mode for vertical navigation: target altitude = base-altitude + target layer * layerHeight, independent of the current physical altitude,
     @Value("${navigation.absolute-altitude.enabled:true}")
     private boolean absoluteAltitudeEnabled;
-    // layer 0 的物理工作高度（米），仅在 absolute-altitude 模式下使用。
-    // 例：base-altitude=0.3、layerHeight=0.6 → layer0=0.3m, layer1=0.9m, layer2=1.5m。
+    // Physical working altitude of layer 0 (metres); used only in absolute-altitude mode.
     @Value("${navigation.base-altitude:0.3}")
     private double navigationBaseAltitude;
 
-    // 传感器漂移导致位置落在栅格外(grid=-1)时，是否回退到起始格放置无人机，
-    // 使其仍留在模型中并允许正常起飞（避免定位抖动导致起飞规则不匹配）。实验用，可随时设为 false 关闭。
+    // Whether to fall back to the start cell when sensor drift puts the position outside the grid (grid=-1)
     @Value("${takeoff.allow-out-of-grid:true}")
     private boolean allowOutOfGridPlacement;
 
-    // 同格共占违规去抖阈值：某格需连续这么多帧被≥2机占用，才计一次真违规。
-    // 用于过滤边界抖动/异步残影造成的单帧假重叠。设为 1 则等同不去抖（旧行为）。
+    // Debounce threshold for co-occupancy violations: a cell must be occupied by >=2 drones for this many consecutive frames before one real violation is counted.
     @Value("${collision.violation.debounce-frames:3}")
     private int violationDebounceFrames;
 
@@ -245,60 +238,56 @@ public class Application3D implements CommandLineRunner {
             .connectTimeout(Duration.ofSeconds(5))
             .build();
     
-    // 无人机目标点映射
+    // Drone target-point mapping
     private final Map<String, GridPoint> droneTargets = new HashMap<>();
     
-    // 充电站位置列表（支持多个充电站）
+    // List of charging-station positions (multiple stations supported)
     private List<GridPoint> chargingStations = new ArrayList<>();
     
-    // 障碍物栅格索引集合（线程安全）
+    // Set of obstacle grid indices (thread-safe)
     private final Set<Integer> obstacleGrids = ConcurrentHashMap.newKeySet();
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     
-    // 无人机位置信息存储（线程安全）：droneId -> {x, y, gridIndex}
+    // Drone position store (thread-safe): droneId -> {x, y, gridIndex}
     private final Map<String, DronePosition> dronePositions = new ConcurrentHashMap<>();
     
-    // 无人机状态信息存储（线程安全）：droneId -> {status, z, hasTakenOff}
+    // Drone status store (thread-safe): droneId -> {status, z, hasTakenOff}
     private final Map<String, DroneStatus> droneStatuses = new ConcurrentHashMap<>();
     
-    // 碰撞风险标记
+    // Collision-risk flag
     private final AtomicBoolean collisionRiskDetected = new AtomicBoolean(false);
     
-    // Grid预订系统：防止多个无人机同时移动到同一个grid
+    // Grid reservation system: prevents several drones from moving into the same grid at once
     private final Map<Integer, GridReservation> gridReservations = new ConcurrentHashMap<>();
     
-    // CDO操作同步锁：防止多个线程同时操作CDO数据库导致冲突
+    // CDO synchronisation lock: prevents concurrent threads from conflicting on the CDO database
     private final Object cdoLock = new Object();
 
     private DynamicSignature combinedSignature;
-    private DynamicSignature serviceWorldSignature;  // 从服务World Model提取的签名
+    private DynamicSignature serviceWorldSignature;  // Signature extracted from the service world model
     
-    // CDO 更新策略：保存对象 ID，用于后续更新
+    // CDO update strategy: keep the object ID for later updates
     private CDOID cdoIdWorld;
     private CDOID cdoIdDrone;
     private CDOID cdoIdComposed;
     
-    // 保存当前的 Bigraph 对象引用
+    // Reference to the current bigraph object
     private PureBigraph worldPart;
     private PureBigraph dronePart;
     private PureBigraph composite;
     
-    // 标记位：是否已完成首次模型更新
+    // Flag: whether the first model update has completed
     private final AtomicBoolean firstUpdateCompleted = new AtomicBoolean(false);
 
     // Mission metrics (Baseline + Bigraph runs use the same ROS pose span for completion time)
     private final AtomicLong coOccupancyViolationCount = new AtomicLong(0);
-    // 去抖：记录每个格子"连续被≥2机占用"的帧数；只有连续帧数达到阈值才计入一次真违规，
-    // 过滤边界抖动/异步残影造成的单帧假重叠。
+    // Debounce: counts, per cell, how many consecutive frames it was occupied by >=2 drones; only when the count reaches the threshold is one real violation recorded,
+    // which filters out single-frame false overlaps caused by boundary jitter or asynchronous ghosting.
     private final Map<Integer, Integer> coOccupancyStreak = new ConcurrentHashMap<>();
-    // 本次持续冲突段中已计过数的格子（清空后同一格再次冲突才会重新计数）。
+    // Cells already counted during the current sustained-conflict window (cleared so the same cell can be counted again on a new conflict).
     private final Set<Integer> countedViolationGrids = ConcurrentHashMap.newKeySet();
 
-    // Per-decision, per-drone latency samples (ms), disjoint phases: Planning (A* + diagonal check) ->
-    // Match (FEDT runtime gate admissibility check only) -> REST (dispatch to drone control API).
-    // Keyed by droneId so cf231/D0's samples are never pooled with cf232/D1's, etc.
-    // Populated inside logPlanningLatency / logMatchOnlyLatency / logRestLatency respectively.
     private final Map<String, Queue<Double>> planningLatenciesMsByDrone = new ConcurrentHashMap<>();
     private final Map<String, Queue<Double>> gateMatchLatenciesMsByDrone = new ConcurrentHashMap<>();
     private final Map<String, Queue<Double>> restLatenciesMsByDrone = new ConcurrentHashMap<>();
@@ -336,35 +325,35 @@ public class Application3D implements CommandLineRunner {
 
         prepareDatabase();
 
-        // 步骤1: 首先获取World签名（从本地文件，与服务兼容）
+        // Step 1: obtain the world signature (from a local file, compatible with the service)
         fetchWorldSignatureFromService();
         
-        // 步骤2: 构建合并签名（World + Drone）
+        // Step 2: build the merged signature (world + drone)
         System.out.println("Building merged signature");
         sig();
 
-        // 步骤3: 加载World Model（使用world签名）
+        // Step 3: load the world model (using the world signature)
         worldPart = fetchWorldModelFromService();
         
-        // 步骤4: 注册元模型到CDO
+        // Step 4: register the metamodel with CDO
         registerMetaModelToCDO();
 
         System.out.println("\n========================================");
         System.out.println("Creating Drone Model and Composite Model");
         System.out.println("========================================");
         
-        // 步骤5: 创建Drone Model和组合模型
+        // Step 5: create the drone model and the composite model
         int currentSiteCount = worldPart.getSites().size();
         dronePart = droneModel(currentSiteCount);
         composite = composeWorldAndDrones(worldPart, dronePart);
 
-        // 步骤6: 插入对象并保存 CDOID，用于后续更新（保留历史版本），这一步需要元模型信息，所以必须先注册元模型（步骤4）
+        // Step 6: insert the object and keep its CDOID for later updates (history is retained); this needs metamodel information, so the metamodel must be registered first (step 4)
         EPackage MM = createOrGetBigraphMetaModel(sig());
         worldPart = BigraphUtil.toBigraph(MM, template.insert(worldPart.getInstanceModel(), "/world"), sig());
         dronePart = BigraphUtil.toBigraph(MM, template.insert(dronePart.getInstanceModel(), "/drone"), sig());
         composite = BigraphUtil.toBigraph(MM, template.insert(composite.getInstanceModel(), "/composed"), sig());
 
-        // 步骤7: 保存 CDOID，用于后续更新
+        // Step 7: store the CDOID for later updates
         cdoIdWorld = CDOUtil.getCDOObject(worldPart.getInstanceModel()).cdoID();
         cdoIdDrone = CDOUtil.getCDOObject(dronePart.getInstanceModel()).cdoID();
         cdoIdComposed = CDOUtil.getCDOObject(composite.getInstanceModel()).cdoID();
@@ -373,19 +362,19 @@ public class Application3D implements CommandLineRunner {
         System.out.println("✓ Drone Model inserted into CDO (CDOID: " + cdoIdDrone + ")");
         System.out.println("✓ Composite Model inserted into CDO (CDOID: " + cdoIdComposed + ")");
         
-        // 初始化 ROS2 订阅（如果启用）
+        // Initialise the ROS2 subscriptions (if enabled)
         initializeRosSubscriptions();
 
-        // 启动故障注入 HTTP 控制端点（可随时 curl 让某架无人机 battery Low/Empty 或 comm Bad）
+        // Start the fault-injection HTTP endpoint (curl can put any drone into battery Low/Empty or comm Bad at any time)
         startFaultInjectionServer();
 
         if (!baselineMode) {
-            // 启动后台模型更新线程（持续快速更新）
+            // Start the background model-update thread (continuous fast updates)
             Thread modelUpdateThread = new Thread(this::continuousModelUpdate, "ModelUpdateThread");
             modelUpdateThread.setDaemon(false);
             modelUpdateThread.start();
             
-            // 等待第一次模型更新完成
+            // Wait for the first model update to complete
             System.out.println("Waiting for first model update to complete...");
             while (!firstUpdateCompleted.get()) {
                 TimeUnit.MILLISECONDS.sleep(100);
@@ -396,7 +385,7 @@ public class Application3D implements CommandLineRunner {
             System.out.println("✓ Baseline mode: skipping continuous Bigraph model update thread\n");
         }
         
-        // 启动电池和通信状态监测线程（如果启用ROS2）
+        // Start the battery and communication monitoring thread (if ROS2 is enabled)
         if (rosUpdateEnabled) {
             Thread statusMonitorThread = new Thread(this::continuousStatusMonitoring, "StatusMonitorThread");
             statusMonitorThread.setDaemon(false);
@@ -404,21 +393,21 @@ public class Application3D implements CommandLineRunner {
             System.out.println("✓ Battery and communication status monitoring thread started");
         }
         
-        // 等待ROS2状态数据稳定（电池电压、RSSI等）
-        // 这确保Pre-Takeoff Check时能获取到真实的电池状态
+        // Wait for the ROS2 status data to stabilise (battery voltage, RSSI, etc.)
+        // This ensures the pre-take-off check sees the real battery state
         if (rosUpdateEnabled) {
             System.out.println("Waiting for ROS2 status data to stabilize (3 seconds)...");
             TimeUnit.MILLISECONDS.sleep(3000);
             System.out.println("✓ ROS2 status data should be stable now\n");
         }
         
-        // 解析目标点配置（在ROS2数据稳定后解析，以获取正确的起始位置）
+        // Parse the target configuration (after the ROS2 data has stabilised, so start positions are correct)
         parseDroneTargets();
         
-        // 执行起飞序列：规则匹配并发送起飞指令
+        // Run the take-off sequence: match the rule and send the take-off command
         if (droneControlEnabled) {
             performTakeoffSequence();
-            // 起飞后集体升高到统一工作高度（如启用），再进入导航循环
+            // After take-off, collectively ascend to the common working altitude (if enabled) before entering the navigation loop
             performCollectiveAscent();
         }
         
@@ -426,25 +415,25 @@ public class Application3D implements CommandLineRunner {
         System.out.println("Entering navigation control loop...");
         System.out.println("========================================\n");
         
-        // 主控制循环：处理起飞和降落规则应用
+        // Main control loop: applies the take-off and landing rules
         while (true) {
-            TimeUnit.MILLISECONDS.sleep(1000);  // 每秒检查一次
+            TimeUnit.MILLISECONDS.sleep(1000);  // Check once per second
             
             if (!droneControlEnabled || !rosUpdateEnabled) {
                 continue;
             }
             
-            // 检查并应用起飞规则（当无人机实际起飞后）
+            // Checks and applies the take-off rule once the drone has physically taken off
             checkAndApplyTakeoffRules();
             
-            // 执行导航控制（规划路径并移动）
+            // Run navigation control (plan a path and move)
             if (baselineMode) {
                 performBaselineNavigationControl();
             } else {
                 performNavigationControl();
             }
             
-            // 检查并应用降落规则（到达目标后降落）
+            // Check and apply the landing rule (land after reaching the target)
             checkAndApplyLandingRules();
             
             maybePrintMissionReport();
@@ -452,8 +441,8 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 持续快速更新模型（后台线程）
-     * ContinuousModelUpdate添加同步锁，防止与StatusMonitorThread同时操作CDO导致冲突
+     * Continuously updates the model at a fast rate (background thread)
+     * ContinuousModelUpdate takes a synchronisation lock so it does not conflict with StatusMonitorThread on CDO
      */
     private void continuousModelUpdate() {
         try {
@@ -463,15 +452,15 @@ public class Application3D implements CommandLineRunner {
             while (true) {
                 updateCount++;
                 
-                // 获取最新的 World Model（这个操作不需要锁，只是HTTP请求）
+                // Fetch the latest world model (no lock needed, this is just an HTTP request)
                 PureBigraph latestWorld = fetchWorldModelFromService();
                 int newSiteCount = latestWorld.getSites().size();
                 
-                // 根据 ROS2 位置或站点数量变化，重新创建 Drone Model
+                // Rebuild the drone model when the ROS2 positions or the site count change
                 boolean needUpdateDrone = (newSiteCount != currentSiteCount) || 
                                          (rosUpdateEnabled && !dronePositions.isEmpty() && !collisionRiskDetected.get());
                 
-                //使用同步锁包裹所有CDO操作
+                //Wrap all CDO operations in the synchronisation lock
                 synchronized (cdoLock) {
                     if (needUpdateDrone) {
                         if (newSiteCount != currentSiteCount) {
@@ -479,37 +468,37 @@ public class Application3D implements CommandLineRunner {
                             currentSiteCount = newSiteCount;
                         }
                         
-                        // 根据 ROS2 位置创建 Drone Model（如果启用且无碰撞风险）
+                        // Build the drone model from the ROS2 positions (if enabled and no collision risk)
                         if (rosUpdateEnabled && !dronePositions.isEmpty() && !collisionRiskDetected.get()) {
                             dronePart = droneModelFromRosPositions(newSiteCount);
                         } else {
                             dronePart = droneModel(newSiteCount);
                         }
                         
-                        // 更新 Drone Model：插入新版本（CDO审计功能会保留历史）
+                        // Update the drone model: insert a new version (CDO auditing keeps the history)
                         EObject insertedDrone = template.insert(dronePart.getInstanceModel(), "/drone");
                         dronePart = BigraphUtil.toBigraph(createOrGetBigraphMetaModel(sig()), insertedDrone, sig());
                         cdoIdDrone = CDOUtil.getCDOObject(dronePart.getInstanceModel()).cdoID();
                     }
 
-                    // 更新 World Model：插入新版本（CDO审计功能会保留历史）
+                    // Update the world model: insert a new version (CDO auditing keeps the history)
                     EObject insertedWorld = template.insert(latestWorld.getInstanceModel(), "/world");
                     worldPart = BigraphUtil.toBigraph(createOrGetBigraphMetaModel(sig()), insertedWorld, sig());
                     cdoIdWorld = CDOUtil.getCDOObject(worldPart.getInstanceModel()).cdoID();
 
-                    // 更新 Composite Model：插入新版本（CDO审计功能会保留历史）
+                    // Update the composite model: insert a new version (CDO auditing keeps the history)
                     PureBigraph updatedComposite = composeWorldAndDrones(worldPart, dronePart);
                     EObject insertedComposite = template.insert(updatedComposite.getInstanceModel(), "/composed");
                     composite = BigraphUtil.toBigraph(createOrGetBigraphMetaModel(sig()), insertedComposite, sig());
                     cdoIdComposed = CDOUtil.getCDOObject(composite.getInstanceModel()).cdoID();
                 }
                 
-                // 标记首次更新完成
+                // Mark the first update as complete
                 if (!firstUpdateCompleted.get()) {
                     firstUpdateCompleted.set(true);
                 }
                 
-                // ##############模型更新固定延迟，毫秒。
+                // ############## Fixed delay between model updates, in milliseconds.
                 TimeUnit.MILLISECONDS.sleep(500);
             }
         } catch (Exception e) {
@@ -522,19 +511,19 @@ public class Application3D implements CommandLineRunner {
     private void prepareDatabase() throws Exception {
         System.out.println("Preparing CDO database...");
         
-        // 注意：此时签名还未构建，只是清理数据库，元模型注册将在后面进行
+        // Note: the signature is not built yet; this only cleans the database, metamodel registration happens later
         
-        // 安全地删除资源：捕获所有异常以处理脏资源或不存在的资源
+        // Delete resources safely: catch every exception to handle dirty or missing resources
         String[] paths = {"/drone", "/world", "/composed"};
         for (String path : paths) {
             try {
                 template.removeAll(path);
                 System.out.println("  ✓ Cleared path: " + path);
             } catch (org.eclipse.emf.cdo.view.CDOViewSet.CDOViewSetException e) {
-                // CDO 脏资源错误：资源有未提交的更改，忽略（可能是前次运行遗留）
+                // CDO dirty-resource error: the resource has uncommitted changes; ignore it (likely left over from a previous run)
                 System.out.println("  ⚠ Skipped dirty resource: " + path + " (will be overwritten)");
             } catch (Exception e) {
-                // 其他错误（如资源不存在）：忽略
+                // Other errors (such as a missing resource): ignore
                 System.out.println("  ! Error cleaning " + path + " (ignorable): " + e.getClass().getSimpleName());
             }
         }
@@ -543,17 +532,17 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * // 步骤4：注册元模型到CDO（为步骤6插入实例模型到CDO做准备）
+     * // Step 4: register the metamodel with CDO (preparing for step 6, which inserts the instance model)
      */
     private void registerMetaModelToCDO() throws Exception {
-        //System.out.println("注册元模型到CDO...");
+        //System.out.println("Registering the metamodel with CDO...");
         
         DynamicSignature signature = sig();
-        EPackage metaModel = createOrGetBigraphMetaModel(signature); //根据签名创建或获取对应的 EMF 元模型
+        EPackage metaModel = createOrGetBigraphMetaModel(signature); // Create or fetch the EMF metamodel corresponding to the signature
 
-        EPackage.Registry.INSTANCE.put(metaModel.getNsURI(), metaModel); //将元模型注册到 EMF 的 EPackage 注册表中，让 EMF 框架知道这个元模型
-        CDOPackageRegistry.INSTANCE.put(metaModel.getNsURI(), metaModel); //将元模型注册到 CDO 的 CDO 包注册表中，让 CDO 框架知道这个元模型
-        template.getCDOPackageRegistry().put(metaModel.getNsURI(), metaModel); //将元模型注册到 Spring Data CDO 的 CDO 包注册表中，让这个特定的 CDO 模板知道元模型
+        EPackage.Registry.INSTANCE.put(metaModel.getNsURI(), metaModel); // Register the metamodel in the EMF EPackage registry so EMF knows about it
+        CDOPackageRegistry.INSTANCE.put(metaModel.getNsURI(), metaModel); // Register the metamodel in the CDO package registry so CDO knows about it
+        template.getCDOPackageRegistry().put(metaModel.getNsURI(), metaModel); // Register the metamodel in the Spring Data CDO package registry so this CDO template knows about it
     }
 
     private DynamicSignature sig() {
@@ -567,12 +556,12 @@ public class Application3D implements CommandLineRunner {
         try {
             System.out.println("Building merged signature (World + Drone)...");
             
-            // 确保world签名已加载
+            // Make sure the world signature has been loaded
             if (serviceWorldSignature == null) {
                 throw new IllegalStateException("World signature not loaded yet!");
             }
             
-            // 使用 BigraphUtil.mergeSignatures 方法合并（与 DroneLandingSystem4x5.java 相同）
+            // Merge using BigraphUtil.mergeSignatures (same as DroneLandingSystem4x5.java)
             DynamicSignature droneSignature = createDroneSignature();
             DynamicSignature merged = BigraphUtil.mergeSignatures(serviceWorldSignature, droneSignature);
             
@@ -590,8 +579,8 @@ public class Application3D implements CommandLineRunner {
     }
 
     /**
-     * 创建Drone签名
-     * 注意：使用 .add() 而不是 .addControl()，因为版本差异
+     * Creates the drone signature
+     * Note: uses .add() rather than .addControl() because of a version difference
      */
     private DynamicSignature createDroneSignature() {
         DynamicSignatureBuilder builder = pureSignatureBuilder();
@@ -615,7 +604,7 @@ public class Application3D implements CommandLineRunner {
     }
 
     /**
-     * 从本地获取World Model签名
+     * Loads the world model signature from the local file
      */
     private DynamicSignature fetchWorldSignatureFromService() throws Exception {
         if (serviceWorldSignature != null) {
@@ -624,7 +613,7 @@ public class Application3D implements CommandLineRunner {
         
         System.out.println("\n==================Local World Signature======================");
         
-        // 从本地签名文件加载
+        // Load from the local signature file
             List<EObject> sigObjects = BigraphFileModelManagement.Load.signatureInstanceModel(
                     WORLD_SIGNATURE_MM, WORLD_SIGNATURE_INSTANCE);
         serviceWorldSignature = (DynamicSignature) createOrGetSignature(sigObjects.get(0));
@@ -641,13 +630,13 @@ public class Application3D implements CommandLineRunner {
     }
 
     private PureBigraph fetchWorldModelFromService() throws Exception {
-        //System.out.println("\n===========获取World Model实例=============================");
+        //System.out.println("\n===========Fetching the world model instance=============================");
         
-        // 关键：使用合并签名创建bigraph元模型
+        // Important: create the bigraph metamodel from the merged signature
         DynamicSignature combinedSig = sig();
         EPackage metaModel = createOrGetBigraphMetaModel(combinedSig);
         
-        //System.out.println("  签名控制数: " + combinedSig.getControls().size());
+        //System.out.println("  Signature control count: " + combinedSig.getControls().size());
         
         System.out.println("\nFetching 3D BiGrid instance model...");
         URI uri = URI.create(String.format(Locale.ROOT,
@@ -666,17 +655,17 @@ public class Application3D implements CommandLineRunner {
             throw new IllegalStateException("Failed to fetch BiGrid model, status=" + response.statusCode());
         }
 
-        // 从JSON响应中提取XML内容
+        // Extract the XML content from the JSON response
         String xmlContent = extractXmlFromJsonResponse(response.body());
         
-        // 使用合并签名的元模型来反序列化实例模型
+        // Deserialise the instance model using the merged-signature metamodel
         try (ByteArrayInputStream inputStream = new ByteArrayInputStream(xmlContent.getBytes(StandardCharsets.UTF_8))) {
-            // 使用合并签名的元模型加载实例
+            // Load the instance using the merged-signature metamodel
             List<EObject> worldObjects = BigraphFileModelManagement.Load.bigraphInstanceModel(metaModel, inputStream);
             
-            // 使用合并签名转换为Bigraph
+            // Convert to a bigraph using the merged signature
             PureBigraph bigraph = BigraphUtil.toBigraph(metaModel, worldObjects.get(0), combinedSig);
-            //System.out.println("  反序列化成功，Site数量: " + bigraph.getSites().size());
+            //System.out.println("  Deserialisation succeeded, site count: " + bigraph.getSites().size());
             //System.out.println("========================================\n");
             
             return bigraph;
@@ -690,46 +679,46 @@ public class Application3D implements CommandLineRunner {
     }
 
     /**
-     * 从JSON响应中提取XML内容
+     * Extract the XML content from the JSON response
      */
     private String extractXmlFromJsonResponse(String responseBody) throws Exception {
         String trimmedBody = responseBody.trim();
         
         try {
-            // 检查是否为JSON格式
+            // Check whether the payload is JSON
             if (trimmedBody.startsWith("{")) {
                 JsonNode jsonNode = objectMapper.readTree(trimmedBody);
                 
-                // 检查是否有content字段
+                // Check for a content field
                 if (jsonNode.has("content")) {
                     String content = jsonNode.get("content").asText();
                     
-                    // 检查mimeType
+                    // Check the mimeType
                     String mimeType = jsonNode.has("mimeType") ? jsonNode.get("mimeType").asText() : "";
                     
-                    // 如果mimeType表明是XML，直接返回content
+                    // If the mimeType says XML, return the content directly
                     if (mimeType.contains("xml")) {
-                        //System.out.println("从JSON包装中提取XML内容");
+                        //System.out.println("Extracting XML content from the JSON wrapper");
                         return content;
                     }
                     
-                    // 如果没有明确的xml mimeType，尝试检测content是否为XML
+                    // Without an explicit XML mimeType, try to detect whether the content is XML
                     if (content.trim().startsWith("<?xml") || content.trim().startsWith("<")) {
-                        //System.out.println("内容看起来是XML，直接使用");
+                        //System.out.println("The content looks like XML, using it directly");
                         return content;
                     }
                 }
                 
-                throw new IllegalStateException("JSON响应不包含有效的XML内容");
+                throw new IllegalStateException("The JSON response contains no valid XML content");
             }
             
-            // 如果不是JSON，假设是纯XML
+            // If it is not JSON, assume plain XML
             if (trimmedBody.startsWith("<?xml") || trimmedBody.startsWith("<")) {
                 System.out.println("Response appears to be pure XML");
                 return trimmedBody;
             }
             
-            throw new IllegalStateException("响应既不是有效的JSON也不是XML。前100个字符: " + 
+            throw new IllegalStateException("The response is neither valid JSON nor XML. First 100 characters: " + 
                     trimmedBody.substring(0, Math.min(100, trimmedBody.length())));
             
         } catch (Exception e) {
@@ -746,7 +735,7 @@ public class Application3D implements CommandLineRunner {
                 gridOriginX, gridOriginY, gridOriginZ, gridStepX, gridStepY, layerHeight);
     }
 
-    //用于初始化第一次放置drone model
+    // Used for the initial placement of the drone model
     private PureBigraph droneModel(int siteCount) throws InvalidConnectionException, TypeNotExistsException {
         if (siteCount <= 0) {
             return pureBuilder(sig()).create();
@@ -754,7 +743,7 @@ public class Application3D implements CommandLineRunner {
 
         List<Bigraph<DynamicSignature>> placements = new ArrayList<>();
         for (int i = 0; i < siteCount; i++) {
-            // 检查是否是障碍物栅格
+            // Check whether this is an obstacle grid
             if (obstacleGrids.contains(i)) {
                 placements.add(buildObstacleCell());
             } else {
@@ -764,27 +753,27 @@ public class Application3D implements CommandLineRunner {
 
         int dronesToPlace = Math.min(configuredDroneCount, siteCount);
         for (int idx = 0; idx < dronesToPlace; idx++) {
-            // 跳过障碍物栅格，不在障碍物位置放置无人机
+            // Skip obstacle grids; do not place a drone on an obstacle
             if (obstacleGrids.contains(idx)) {
                 continue;
             }
             
             String droneId = "D" + idx;
-            // 获取无人机的实际状态
-            String droneStatus = "Landed";  // 默认状态
+            // Get the actual drone status
+            String droneStatus = "Landed";  // Default status
             DroneStatus status = droneStatuses.get(droneId);
             if (status != null) {
                 if (status.landingRuleApplied) {
-                    droneStatus = "Landed";  // 降落规则已应用，状态为 Landed
+                    droneStatus = "Landed";  // The landing rule has been applied, status is Landed
                 } else if (status.takeoffRuleApplied) {
-                    droneStatus = "flying";  // 起飞规则已应用，状态为 flying
+                    droneStatus = "flying";  // The take-off rule has been applied, status is flying
                 }
             }
             placements.set(idx, buildDrone(droneId, droneStatus, "OccupiedBy"));
         }
 
         Bigraph<DynamicSignature> result = placements.stream()
-                .reduce(pureLinkings(sig()).identity_e(), accumulator::apply); //pureLinkings(sig()).identity_e()是一个空bigraph
+                .reduce(pureLinkings(sig()).identity_e(), accumulator::apply); // pureLinkings(sig()).identity_e() is an empty bigraph
         return (PureBigraph) result;
     }
 
@@ -792,7 +781,7 @@ public class Application3D implements CommandLineRunner {
         PureBigraphBuilder<DynamicSignature> builder = pureBuilder(sig());
         String normalizedId = id.toLowerCase(Locale.ROOT);
         
-        // 获取内存中无人机的实际电池和通信状态，用于构建每一轮的drone model
+        // Read the in-memory battery and communication state of the drone, used to build the drone model each round
         DroneStatus droneStatus = droneStatuses.get(id);
         String batteryLevel = (droneStatus != null) ? droneStatus.batteryLevel : "Normal";
         String communicationStatus = (droneStatus != null) ? droneStatus.communicationStatus : "Normal";
@@ -815,8 +804,8 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 构建带障碍物的OccupiedBy节点
-     * OccupiedBy节点下包含ObstacleOrWeather节点，表示该栅格被障碍物占用
+     * Builds an OccupiedBy node containing an obstacle
+     * The OccupiedBy node contains an ObstacleOrWeather node, marking the cell as occupied by an obstacle
      */
     private PureBigraph buildObstacleCell() throws InvalidConnectionException, TypeNotExistsException {
         PureBigraphBuilder<DynamicSignature> builder = pureBuilder(sig());
@@ -830,7 +819,7 @@ public class Application3D implements CommandLineRunner {
         return ops(world).nesting(drones).getOuterBigraph();
     }
 
-    // 用于合并 Bigraph 列表的累加器，parallelProduct：将两个Bigraph并排合并
+    // Accumulator for merging a list of bigraphs; parallelProduct places two bigraphs side by side
     private final BinaryOperator<Bigraph<DynamicSignature>> accumulator = (partial, element) -> {
         try {
             return ops(partial).parallelProduct(element).getOuterBigraph();
@@ -904,7 +893,7 @@ public class Application3D implements CommandLineRunner {
         return new ParametricReactionRule<>(redexB.create(), reactumB.create(), instantiationMap);
     }
 
-    /** 通用电池状态转换规则 */
+    /** Generic battery state-transition rule */
     private ParametricReactionRule<PureBigraph> createBatteryRule(String id, String from, String to) throws Exception {
         PureBigraphBuilder<DynamicSignature> redexB = pureBuilder(sig());
         PureBigraphBuilder<DynamicSignature> reactumB = pureBuilder(sig());
@@ -941,7 +930,7 @@ public class Application3D implements CommandLineRunner {
         return createBatteryRule(id, "Low", "Empty");
     }
 
-    /** 通用通信状态转换规则 */
+    /** Generic communication state-transition rule */
     private ParametricReactionRule<PureBigraph> createCommunicationRule(String id, String from, String to) throws Exception {
         PureBigraphBuilder<DynamicSignature> redexB = pureBuilder(sig());
         PureBigraphBuilder<DynamicSignature> reactumB = pureBuilder(sig());
@@ -972,10 +961,10 @@ public class Application3D implements CommandLineRunner {
 
 
     /**
-     * 创建方向性移动规则（通用方法）
-     * @param id 无人机ID
-     * @param routeType Route类型（ForwardRoute, BackRoute, LeftRoute, RightRoute）
-     * @return 移动规则
+     * Creates a directional movement rule (generic helper)
+     * @param id drone ID
+     * @param routeType route type (ForwardRoute, BackRoute, LeftRoute, RightRoute)
+     * @return the movement rule
      */
     private ParametricReactionRule<PureBigraph> createDirectionalMoveRule(String id, String routeType) throws Exception {
         PureBigraphBuilder<DynamicSignature> redexB = pureBuilder(sig());
@@ -1022,12 +1011,12 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 发送HTTP POST请求到无人机控制服务
-     * @param port 端口号
-     * @param endpoint API端点（如 "/activate_idle", "/begin_takeoff"）
-     * @param successMessage 成功消息
-     * @param errorPrefix 错误消息前缀
-     * @return 是否成功
+     * Sends an HTTP POST request to the drone control service
+     * @param port port number
+     * @param endpoint API endpoint (e.g. "/activate_idle", "/begin_takeoff")
+     * @param successMessage message logged on success
+     * @param errorPrefix prefix for the error message
+     * @return whether the request succeeded
      */
     private boolean sendDroneControlRequest(String droneId, int port, String endpoint, String successMessage, String errorPrefix) {
         try {
@@ -1057,21 +1046,21 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 发送无人机控制指令：激活 idle 状态
+     * Sends a drone control command: activate the idle state
      */
     private boolean activateIdle(String droneId, int port) {
         return sendDroneControlRequest(droneId, port, "/activate_idle", "Idle state has been activated.", "activate idle");
     }
     
     /**
-     * 发送无人机控制指令：开始起飞
+     * Sends a drone control command: begin take-off
      */
     private boolean beginTakeoff(String droneId, int port) {
         return sendDroneControlRequest(droneId, port, "/begin_takeoff", "Takeoff command has been transmitted.", "takeoff");
     }
     
     /**
-     * 发送无人机导航指令：移动到指定位置
+     * Sends a drone navigation command: move to the given position
      */
     private boolean navigateTo(String droneId, int port, double x, double y, double z) {
         try {
@@ -1102,15 +1091,15 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 发送无人机控制指令：开始降落
+     * Sends a drone control command: begin landing
      */
     private boolean beginLanding(String droneId, int port) {
         return sendDroneControlRequest(droneId, port, "/begin_landing", "Landing command has been transmitted.", "landing");
     }
     
     /**
-     * 对所有无人机执行起飞流程：规则匹配 -> 发送起飞指令
-     * 【修复】使用最新的 composite 字段而不是传入参数，确保电池/通信规则应用后能获取最新状态
+     * Runs the take-off sequence for every drone: match the rule, then send the take-off command
+     * Uses the current composite field rather than the argument, so the latest state is seen after the battery/comm rules have been applied
      */
     private void performTakeoffSequence() throws Exception {
         if (!droneControlEnabled) {
@@ -1128,7 +1117,7 @@ public class Application3D implements CommandLineRunner {
         System.out.println("========================================");
         
         if (!baselineMode) {
-            // 在起飞前先应用一次电池和通信规则，确保Bigraph中的状态是最新的
+            // Apply the battery and communication rules once before take-off so the bigraph state is up to date
             System.out.println("\n[Pre-Takeoff Check] Applying battery and communication rules...");
             for (int i = 0; i < configuredDroneCount; i++) {
                 String droneId = "D" + i;
@@ -1158,14 +1147,14 @@ public class Application3D implements CommandLineRunner {
             try {
                 System.out.println("\nProcessing " + droneId + " (cf" + cfNumber + ", port " + port + "):");
                 
-                // 输出当前电池状态
+                // Log the current battery state
                 DroneStatus status = droneStatuses.get(droneId);
                 if (status != null) {
                     System.out.println("  Current status - Battery: " + status.batteryLevel + 
                             " (" + String.format("%.2f", status.batteryVoltage) + "V), Comm: " + status.communicationStatus);
                 }
                 
-                // 创建起飞规则
+                // Create the take-off rule
                 ParametricReactionRule<PureBigraph> takeoffRule = baselineMode ? null : droneTakeOffRule(droneId);
                 
                 boolean takeoffMatched = baselineMode;
@@ -1193,22 +1182,22 @@ public class Application3D implements CommandLineRunner {
                         continue;
                     }
                     
-                    TimeUnit.MILLISECONDS.sleep(500);  // 等待状态稳定（不计入上述时延）
+                    TimeUnit.MILLISECONDS.sleep(500);  // Wait for the state to settle (not counted in the latency above)
                     
                     if (!beginTakeoff(droneId, port)) {
                         System.err.println("  !! Unable to send takeoff command, skipping " + droneId);
                         continue;
                     }
                     
-                    // 电池保护期，保证在起飞前五秒电池状态不发生变化，在发送起飞命令时立即设置 takeoffTime
+                    // Battery protection window: keeps the battery state unchanged for five seconds before take-off; takeoffTime is set as soon as the take-off command is sent
                     if (status != null) {
                         status.takeoffTime = System.currentTimeMillis();
-                        status.takeoffCommandSent = true;  // 标记已发送起飞命令
+                        status.takeoffCommandSent = true;  // Mark the take-off command as sent
                     }
                     
                     System.out.println("  ✓ " + droneId + " takeoff sequence initiated");
                 } else {
-                    // 输出详细的规则不匹配原因
+                    // Log the detailed reason the rule did not match
                     String reason = "";
                     if (status != null) {
                         if (!"Normal".equals(status.batteryLevel)) {
@@ -1235,10 +1224,10 @@ public class Application3D implements CommandLineRunner {
     }
 
     /**
-     * 集体升高：起飞后把所有无人机统一抬升到 {@code collectiveAscentAltitude} 再进入导航循环。
-     * 通过 collective.ascent.enabled 开关，collective.ascent.altitude 设定初始工作高度。
-     * 步骤：1) 等待所有无人机 hasTakenOff；2) 保持各自水平位置逐机发送升高指令；3) 稳定等待。
-     * 说明：水平移动保持当前高度、垂直移动按 layerHeight 变化，因此抬升后的基准高度会在后续导航中自然保持。
+     * Collective ascent: after take-off, raise every drone to {@code collectiveAscentAltitude} before entering the navigation loop.
+     * Toggled with collective.ascent.enabled; collective.ascent.altitude sets the initial working altitude.
+     * Steps: 1) wait until every drone reports hasTakenOff; 2) send an ascent command to each drone, keeping its horizontal position; 3) wait for the state to settle.
+     * Note: horizontal moves keep the current altitude and vertical moves change it by layerHeight, so the raised baseline altitude is preserved by later navigation.
      */
     private void performCollectiveAscent() {
         if (!collectiveAscentEnabled) {
@@ -1258,13 +1247,13 @@ public class Application3D implements CommandLineRunner {
                 + String.format(Locale.ROOT, "%.2f", collectiveAscentAltitude) + "m");
         System.out.println("========================================");
 
-        // 1) 等待所有（非障碍位）无人机完成起飞
+        // 1) Wait until every drone (excluding those on obstacle cells) has taken off
         long waitStart = System.currentTimeMillis();
         while (true) {
             int taken = 0, active = 0;
             for (int i = 0; i < configuredDroneCount; i++) {
                 if (obstacleGrids.contains(i)) {
-                    continue; // 障碍位不放无人机
+                    continue; // No drone is placed on an obstacle cell
                 }
                 active++;
                 DroneStatus st = droneStatuses.get("D" + i);
@@ -1289,7 +1278,7 @@ public class Application3D implements CommandLineRunner {
             }
         }
 
-        // 2) 逐机发送升高指令：保持当前 x,y，只抬升高度
+        // 2) Send an ascent command per drone: keep the current x,y and only raise the altitude
         for (int i = 0; i < configuredDroneCount; i++) {
             String droneId = "D" + i;
             DroneStatus st = droneStatuses.get(droneId);
@@ -1308,7 +1297,7 @@ public class Application3D implements CommandLineRunner {
             navigateTo(droneId, port, pos.x, pos.y, collectiveAscentAltitude);
         }
 
-        // 3) 稳定等待，让 status.z 收敛到目标高度后再进入导航
+        // 3) Wait for status.z to converge to the target altitude before starting navigation
         try {
             TimeUnit.MILLISECONDS.sleep(collectiveAscentSettleMs);
         } catch (InterruptedException e) {
@@ -1359,11 +1348,11 @@ public class Application3D implements CommandLineRunner {
     }
 
     /**
-     * 计算一次导航移动的目标高度 Z。
-     * <p>绝对模式（navigation.absolute-altitude.enabled=true）：目标高度 = base-altitude + 目标格所在层 * layerHeight，
-     * 与当前物理高度无关。水平和垂直移动都对齐到目标层的绝对高度，因此欠冲/漂移会在下一次移动时被自动校正，
-     * 同一层的所有无人机始终收敛到相同高度，永不越过层边界。
-     * <p>相对模式（默认）：保留原逻辑——垂直移动在当前高度上 ±layerHeight，水平移动保持当前高度。
+     * Computes the target altitude Z for one navigation move.
+     * <p>Absolute mode (navigation.absolute-altitude.enabled=true): target altitude = base-altitude + target cell layer * layerHeight,
+     * independent of the current physical altitude. Horizontal and vertical moves both align to the absolute altitude of the target layer, so undershoot and drift are corrected on the next move,
+     * every drone on a layer converges to the same altitude, and no drone ever crosses a layer boundary.
+     * <p>Relative mode: keeps the original behaviour - a vertical move adds or subtracts layerHeight from the current altitude, a horizontal move keeps it.
      */
     private double computeTargetZ(MoveDirection direction, DroneStatus status, GridPoint nextPoint) {
         boolean vertical = (direction == MoveDirection.UP || direction == MoveDirection.DOWN);
@@ -1379,7 +1368,7 @@ public class Application3D implements CommandLineRunner {
             return targetZ;
         }
 
-        // 相对模式（原逻辑）
+        // Relative mode (original behaviour)
         double targetZ;
         if (direction == MoveDirection.UP) {
             targetZ = status.z + layerHeight;
@@ -1395,10 +1384,10 @@ public class Application3D implements CommandLineRunner {
     }
 
     /**
-     * 斜向移动的额外安全检查：
-     * 对于 FORWARD_LEFT / FORWARD_RIGHT / BACK_LEFT / BACK_RIGHT，
-     * 需要同时检查经过路径上的两个正交相邻格子（例如：前、左）是否被占用或预订。
-     * 如果任意一个格子被其他无人机占用/预订，或是障碍栅格，则本次斜向移动视为不安全。
+     * Extra safety check for diagonal movement:
+     * for FORWARD_LEFT / FORWARD_RIGHT / BACK_LEFT / BACK_RIGHT,
+     * both orthogonally adjacent cells on the swept path (for example forward and left) must be checked for occupancy or reservation.
+     * If either cell is occupied or reserved by another drone, or is an obstacle, the diagonal move is treated as unsafe.
      */
     private boolean isDiagonalPathClear(String droneId, GridPoint current, GridPoint next, MoveDirection direction) {
         if (!(direction == MoveDirection.FORWARD_LEFT ||
@@ -1416,7 +1405,7 @@ public class Application3D implements CommandLineRunner {
         
         List<Integer> cellsToCheck = new ArrayList<>(2);
         
-        // 根据斜向方向，计算路径上需要检查的两个正交格子
+        // Determine the two orthogonal cells to check, based on the diagonal direction
         switch (direction) {
             case FORWARD_LEFT -> {
                 addIfValidDiagonalCheckCell(cellsToCheck, layerIndex, xIndex + 1, yIndex);     // FORWARD
@@ -1440,12 +1429,12 @@ public class Application3D implements CommandLineRunner {
         }
         
         for (int idx : cellsToCheck) {
-            // 忽略与目标格相同的索引（目标格会在Bigraph规则 + 预订逻辑中单独检查）
+            // Ignore indices equal to the target cell (the target is checked separately by the bigraph rule and the reservation logic)
             if (idx == next.gridIndex) {
                 continue;
             }
             
-            // 只根据其他无人机的当前位置进行动态碰撞检查（障碍物和预订在这里不考虑）
+            // Dynamic collision check against the current positions of other drones only (obstacles and reservations are not considered here)
             for (Map.Entry<String, DronePosition> entry : dronePositions.entrySet()) {
                 String otherId = entry.getKey();
                 if (!otherId.equals(droneId)) {
@@ -1460,12 +1449,12 @@ public class Application3D implements CommandLineRunner {
                                 otherTarget = droneTargets.get(otherId);
                             }
                         }
-                        // 策略1: 对方目标是我当前格子 -> 我在让路离开，放行
+                        // Strategy 1: the other drone is heading for my current cell, so I am making way - allow the move
                         if (otherTarget != null && otherTarget.gridIndex == current.gridIndex) {
                             continue;
                         }
                         
-                        // 策略2: 互锁死锁检测 — 双方都在等待时，数字ID小的优先通过
+                        // Strategy 2: deadlock detection - when both drones are waiting, the lower numeric ID goes first
                         DroneStatus myStatus = droneStatuses.get(droneId);
                         if (otherStatus != null && otherStatus.isWaiting
                                 && myStatus != null && myStatus.isWaiting) {
@@ -1478,7 +1467,7 @@ public class Application3D implements CommandLineRunner {
                             }
                         }
                         
-                        // 策略3: 连续等待超过阈值，强制放行避免永久死锁
+                        // Strategy 3: after waiting past the threshold, force the move through to avoid a permanent deadlock
                         if (myStatus != null && myStatus.consecutiveWaitCycles >= 5) {
                             System.out.println("  [Forced Pass] " + droneId +
                                     " forced through Grid[" + idx + "] after " +
@@ -1499,7 +1488,7 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 辅助方法：在合法范围内将 (layer, x, y) 转换为 gridIndex 加入检查列表。
+     * Helper: converts (layer, x, y) to a gridIndex and adds it to the check list, if it is in range.
      */
     private void addIfValidDiagonalCheckCell(List<Integer> cellsToCheck, int layerIndex, int xIndex, int yIndex) {
         if (xIndex >= 0 && xIndex < bigridCols && yIndex >= 0 && yIndex < bigridRows &&
@@ -1518,35 +1507,35 @@ public class Application3D implements CommandLineRunner {
         
         long currentTime = System.currentTimeMillis();
         AbstractBigraphMatcher<PureBigraph> matcher = AbstractBigraphMatcher.create(PureBigraph.class);
-        final long WAIT_TIMEOUT = 8000;  // 等待超时时间（毫秒）
+        final long WAIT_TIMEOUT = 8000;  // Wait timeout in milliseconds
         
         for (Map.Entry<String, DroneStatus> entry : droneStatuses.entrySet()) {
             String droneId = entry.getKey();
             DroneStatus status = entry.getValue();
             
-            // 必须已起飞且起飞规则已应用
+            // Must have taken off and had the take-off rule applied
             if (!status.hasTakenOff || !status.takeoffRuleApplied) {
                 continue;
             }
             
-            // 如果已到达目标，释放所有预订并跳过
+            // If the target is reached, release every reservation and skip
             if (status.reachedDestination) {
                 releaseAllGrids(droneId);
                 continue;
             }
             
             try {
-                // 【修复】在导航前检查是否需要触发应急响应
-                // 如果电池已经是 Low/Empty 但还没有触发应急响应，则跳过本次导航
-                // 等待状态监控线程在下一秒内触发应急响应
+                // Before navigating, check whether an emergency response must be triggered
+                // If the battery is already Low/Empty but no emergency response has been triggered, skip this navigation step
+                // and wait for the status monitor thread to trigger the emergency response within the next second
                 boolean needsEmergency = ("Low".equals(status.batteryLevel) || "Empty".equals(status.batteryLevel) 
                         || "Bad".equals(status.communicationStatus)) && !status.isInEmergency;
                 if (needsEmergency) {
-                    // 跳过本次导航，等待应急响应触发
+                    // Skip this navigation step and wait for the emergency response to be triggered
                     continue;
                 }
                 
-                // 【应急响应】选择目标点：应急状态下使用emergencyTarget，否则使用原始目标
+                // Emergency response - pick the target: use emergencyTarget while in an emergency, otherwise the original target
                 GridPoint target;
                 if (status.isInEmergency && status.emergencyTarget != null) {
                     target = status.emergencyTarget;
@@ -1559,23 +1548,23 @@ public class Application3D implements CommandLineRunner {
                     continue;
                 }
                 
-                // 获取当前位置
+                // Get the current position
                 DronePosition currentPos = dronePositions.get(droneId);
                 if (currentPos == null || currentPos.gridIndex < 0) {
                     continue;
                 }
                 
-                // 检查是否正在移动中（已发送指令但ROS2位置还未更新）
+                // Check whether a move is in progress (command sent but the ROS2 position has not updated yet)
                 if (status.isMoving && status.movingToGrid != null) {
-                    // 检查是否已到达目标grid
+                    // Check whether the target grid has been reached
                     if (currentPos.gridIndex == status.movingToGrid) {
-                        // 已到达，重置移动状态
+                        // Arrived - reset the movement state
                         System.out.println("  ✓ " + droneId + " arrived at Grid[" + status.movingToGrid + "]");
                         
-                        // 释放所有旧的预订（除了当前位置）
+                        // Release every stale reservation except the current position
                         releaseAllGrids(droneId);
                         
-                        // 预订当前位置（防止其他无人机占用）
+                        // Reserve the current position so no other drone can take it
                         tryReserveGrid(droneId, currentPos.gridIndex);
                         status.reservedGrid = currentPos.gridIndex;
                         
@@ -1584,40 +1573,40 @@ public class Application3D implements CommandLineRunner {
                         status.avoidGrids.clear();
                         status.consecutiveWaitCycles = 0;
                     } else {
-                        // 移动超时：若长时间未到达 movingToGrid（位置漂移或指令不同步），则放弃等待并从当前位置重新规划
+                        // Move timeout: if movingToGrid is not reached for a long time (position drift or a desynchronised command), stop waiting and replan from the current position
                         if (currentTime - status.lastMoveTime > MOVE_TIMEOUT_MS) {
                             System.out.println("  ⏱ " + droneId + " move timeout: expected Grid[" + status.movingToGrid + "], current Grid[" + currentPos.gridIndex + "], re-planning from current position");
                             releaseGrid(droneId, status.movingToGrid);
                             status.reservedGrid = null;
                             status.isMoving = false;
                             status.movingToGrid = null;
-                            // 不 continue，继续往下执行，从 currentPos 重新规划
+                            // Do not continue; fall through and replan from currentPos
                         } else {
-                            // 还在移动中，跳过本次导航控制
+                            // Still moving - skip this navigation control step
                             continue;
                         }
                     }
                 }
                 
-                // 检查是否已到达最终目标
+                // Check whether the final target has been reached
                 if (currentPos.gridIndex == target.gridIndex) {
-                    // 【应急响应】根据应急类型处理到达事件
+                    // Emergency response - handle the arrival according to the emergency type
                     if (status.isInEmergency) {
                         if ("EMPTY_BATTERY".equals(status.emergencyType) || "LOW_BATTERY_BAD_COMM".equals(status.emergencyType)) {
                             System.out.println("\n🚨 [EMERGENCY LANDING] " + droneId + " reached emergency landing point Grid[" + target.gridIndex + "]");
                             status.reachedDestination = true;
                             status.emergencyLanded = true;
-                            // 紧急降落后不再移动
+                            // No further movement after an emergency landing
                         } else if ("LOW_BATTERY".equals(status.emergencyType)) {
                             System.out.println("\n🔋 [RECHARGE POINT] " + droneId + " reached recharge point Grid[" + target.gridIndex + "]");
                             status.reachedDestination = true;
                             status.waitingForRecharge = true;
-                            // 等待充电和起飞
+                            // Wait for charging and take-off
                         } else if ("BAD_COMM".equals(status.emergencyType)) {
                             System.out.println("\n📡 [HOME REACHED] " + droneId + " reached home Grid[" + target.gridIndex + "]");
                             status.reachedDestination = true;
                             status.waitingForRecharge = true;
-                            // 等待通信恢复
+                            // Wait for communication to recover
                         }
                     } else {
                         System.out.println("\n🎯 [Target Reached] " + droneId + " reached target Grid[" + target.gridIndex + "]");
@@ -1630,8 +1619,8 @@ public class Application3D implements CommandLineRunner {
                     continue;
                 }
                 
-                // 限制移动频率（避免过于频繁）
-                if (currentTime - status.lastMoveTime < 2000) { // 2秒移动一次
+                // Rate-limit the moves
+                if (currentTime - status.lastMoveTime < 2000) { // one move every 2 seconds
                     continue;
                 }
                 
@@ -1695,7 +1684,7 @@ public class Application3D implements CommandLineRunner {
                     continue;
                 }
                 
-                // 预订成功！
+                // Reservation succeeded
                 if (status.isWaiting) {
                     long waitTime = currentTime - status.waitingStartTime;
                     System.out.println("  ✓ [Wait End] " + droneId + " successfully reserved Grid[" + nextPoint.gridIndex + 
@@ -1717,23 +1706,23 @@ public class Application3D implements CommandLineRunner {
                         directionName + " moving to Grid[" + nextPoint.gridIndex + 
                         "](" + String.format("%.1f,%.1f,%.1f", nextPoint.x, nextPoint.y, nextPoint.z) + ")");
                 
-                // 计算导航目标的Z坐标（绝对模式=按目标层绝对高度，自我校正；相对模式=当前高度±layerHeight）
+                // Compute the Z coordinate of the navigation target (absolute mode: the absolute altitude of the target layer, self-correcting; relative mode: current altitude +/- layerHeight)
                 double targetZ = computeTargetZ(direction, status, nextPoint);
                 
                 if (navigateTo(droneId, port, nextPoint.x, nextPoint.y, targetZ)) {
                     status.lastMoveTime = currentTime;
                     
-                    // 设置移动状态（正在移动中，等待ROS2位置更新）
+                    // Set the movement state (moving, waiting for the ROS2 position to update)
                     status.isMoving = true;
                     status.movingToGrid = nextPoint.gridIndex;
                     
-                    // 释放当前位置的预订（如果有）
+                    // Release the reservation on the current position, if any
                     if (currentPos.gridIndex != nextPoint.gridIndex) {
                         releaseGrid(droneId, currentPos.gridIndex);
                     }
                 } else {
                     System.err.println(" !! Navigation command failed");
-                    // 释放预订
+                    // Release the reservation
                     releaseGrid(droneId, nextPoint.gridIndex);
                     status.reservedGrid = null;
                     status.isMoving = false;
@@ -1741,7 +1730,7 @@ public class Application3D implements CommandLineRunner {
                 }
                 
             } catch (ClassCastException e) {
-                // 框架 PureBigraph.getPorts() 假定 REFERENCE_PORT 为 EList，EMF/CDO 有时返回数组导致匹配失败
+                // PureBigraph.getPorts() assumes REFERENCE_PORT is an EList, but EMF/CDO sometimes returns an array, which makes the match fail
                 System.err.println(" !! " + droneId + " nav: Bigraph model port structure incompatible (array vs list), skipping this cycle");
             } catch (Exception e) {
                 System.err.println(" !! " + droneId + " nav error: " + e.getMessage());
@@ -1865,8 +1854,8 @@ public class Application3D implements CommandLineRunner {
                 String directionName = direction.name();
                 String navAction = directionName + " move";
 
-                // Baseline: 无任何防护——不做斜向扫掠检查(isDiagonalPathClear)、不做 bigraph 门校验、不预订。
-                // 直接无条件执行 A* 的下一步，因此不会因等待而死锁；冲突(同步汇聚同一格)会真实发生并被统计。
+                // Baseline: no protection at all - no diagonal sweep check (isDiagonalPathClear), no bigraph gate, no reservation.
+                // The next A* step is executed unconditionally, so no deadlock from waiting; conflicts (two drones converging on one cell) really happen and are counted.
                 logPlanningLatency(droneId, navAction, planStart, System.nanoTime());
                 System.out.println("  → [Baseline] " + droneId + " executing " + directionName + " without Bigraph check");
                 
@@ -1915,11 +1904,11 @@ public class Application3D implements CommandLineRunner {
                 status.isWaiting = false;
                 status.waitingForGrid = null;
                 status.consecutiveWaitCycles = 0;
-                // 存储被阻塞格子，下次 planNextStep 会绕开
+                // Record the blocked cell so the next planNextStep routes around it
                 status.avoidGrids.add(blockedPoint.gridIndex);
                 status.avoidGridsSetTime = currentTime;
             } else {
-                // 找不到绕行路径，也记录被阻塞格子，并重置计时器重新等待
+                // No detour found: still record the blocked cell, reset the timer and wait again
                 status.avoidGrids.add(blockedPoint.gridIndex);
                 status.avoidGridsSetTime = currentTime;
                 status.waitingStartTime = currentTime;
@@ -1927,11 +1916,11 @@ public class Application3D implements CommandLineRunner {
         }
     }
     
-    /** 应用Bigraph规则并持久化
-     * @param droneId 无人机ID
-     * @param rule 要应用的规则
-     * @param logPrefix 日志前缀
-     * @return 是否成功应用规则
+    /** Applies a bigraph rule and persists the result
+     * @param droneId drone ID
+     * @param rule the rule to apply
+     * @param logPrefix log prefix
+     * @return whether the rule was applied successfully
      */
     private boolean applyRuleAndPersist(String droneId, ParametricReactionRule<PureBigraph> rule, String logPrefix) {
         return applyRuleAndPersist(droneId, rule, logPrefix, logPrefix);
@@ -1964,7 +1953,7 @@ public class Application3D implements CommandLineRunner {
                     return false;
                 }
             } catch (ClassCastException e) {
-                // 框架 PureBigraph.getPorts() 假定 REFERENCE_PORT 为 EList，EMF/CDO 在某些情况下返回数组导致 [Ljava.lang.Object; cannot be cast to List
+                // PureBigraph.getPorts() assumes REFERENCE_PORT is an EList, but EMF/CDO sometimes returns an array, causing [Ljava.lang.Object; cannot be cast to List
                 System.err.println("  !! Bigraph model port structure incompatible (array vs list), skipping rule: " + droneId + " " + logPrefix);
                 return false;
             } catch (Exception e) {
@@ -1976,8 +1965,8 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 检查并应用起飞规则（当无人机实际起飞后）
-     * 注意：此方法会修改 composite 字段和 cdoIdComposed
+     * Checks and applies the take-off rule once the drone has physically taken off
+     * Note: this method modifies the composite field and cdoIdComposed
      */
     private boolean checkAndApplyTakeoffRules() {
         boolean anyRuleApplied = false;
@@ -1986,7 +1975,7 @@ public class Application3D implements CommandLineRunner {
             String droneId = entry.getKey();
             DroneStatus status = entry.getValue();
             
-            // 如果无人机已经起飞但规则尚未应用
+            // The drone has taken off but the rule has not been applied yet
             if (status.hasTakenOff && !status.takeoffRuleApplied) {
                 if (baselineMode) {
                     System.out.println("\n [Baseline] " + droneId + " took off (altitude: " +
@@ -2002,12 +1991,12 @@ public class Application3D implements CommandLineRunner {
                     
                     ParametricReactionRule<PureBigraph> takeoffRule = droneTakeOffRule(droneId);
                     if (applyRuleAndPersist(droneId, takeoffRule, "status updated to flying", "apply takeoff rule")) {
-                        status.status = "flying"; //保存新状态在内存中，重新构建world model时采用
+                        status.status = "flying"; // Keep the new state in memory; it is used when the world model is rebuilt
                         status.takeoffRuleApplied = true;
                         anyRuleApplied = true;
                     } else {
-                        // 【修复】起飞规则不匹配时，输出原因并仍然更新内存状态
-                        // 这是因为物理上无人机已经起飞，需要保持状态一致
+                        // When the take-off rule does not match, log the reason but still update the in-memory state
+                        // because the drone has physically taken off and the states must stay consistent
                         String reason = "";
                         if (!"Normal".equals(status.batteryLevel)) {
                             reason = "Battery is " + status.batteryLevel + " (rule requires Normal)";
@@ -2019,7 +2008,7 @@ public class Application3D implements CommandLineRunner {
                         System.out.println("  ⚠ Takeoff rule not matched: " + reason);
                         System.out.println("  → Physical state is flying, updating memory status...");
                         
-                        // 更新内存状态，让 droneModelFromRosPositions 在下次更新时正确设置 Bigraph 状态
+                        // Update the in-memory state so droneModelFromRosPositions sets the bigraph state correctly on the next update
                         status.status = "flying";//? todo: test if this is needed
                         status.takeoffRuleApplied = true;
                     }
@@ -2034,19 +2023,19 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 检查并应用降落规则（当无人机到达目标并实际降落后）
-     * 注意：此方法会修改 composite 字段和 cdoIdComposed
+     * Checks and applies the landing rule once the drone has reached its target and physically landed
+     * Note: this method modifies the composite field and cdoIdComposed
      */
     private boolean checkAndApplyLandingRules() {
         boolean anyRuleApplied = false;
         long currentTime = System.currentTimeMillis();
         
-        // 独立处理每架无人机的降落逻辑
+        // Handle the landing logic of each drone independently
         for (Map.Entry<String, DroneStatus> entry : droneStatuses.entrySet()) {
             String droneId = entry.getKey();
             DroneStatus status = entry.getValue();
             
-            // 步骤1：检查是否到达目标点 -> 立即发送降落指令（不等待其他无人机）
+            // Step 1: if the target has been reached, send the landing command immediately (without waiting for the other drones)
             if (status.reachedDestination && !status.landingCommandSent) {
                 try {
                     System.out.println("\n[Target Reached] " + droneId + " reached target, beginning landing immediately...");
@@ -2065,14 +2054,14 @@ public class Application3D implements CommandLineRunner {
                     System.err.println(" !! Error sending landing command: " + e.getMessage());
                     e.printStackTrace();
                 }
-                continue; // 发送降落指令后，继续处理下一架无人机
+                continue; // After sending the landing command, move on to the next drone
             }
             
-            // 步骤2：检查是否已降落 -> 应用降落规则（独立处理）
+            // Step 2: if the drone has landed, apply the landing rule (handled independently)
             if (status.landingCommandSent && !status.landingRuleApplied) {
                 long timeSinceLandingCommand = currentTime - status.landingCommandTime;
                 
-                if (timeSinceLandingCommand >= 2000 && status.hasLanded) { // 2秒后且已降落
+                if (timeSinceLandingCommand >= 2000 && status.hasLanded) { // after 2 seconds and once landed
                     try {
                         System.out.println("\n [Rule Apply] " + droneId + " landed (altitude: " + 
                                 String.format("%.3f", status.z) + "m), applying landing rule...");
@@ -2097,21 +2086,21 @@ public class Application3D implements CommandLineRunner {
     }
 
     /**
-     * 持续监测电池和通信状态，并应用相应规则
-     * 独立线程运行，与位置更新和导航控制并行
+     * Continuously monitors the battery and communication state and applies the matching rules
+     * Runs on its own thread, in parallel with position updates and navigation control
      */
-    // ==================== 故障注入 (Fault Injection) ====================
-    // 通过一个内置的轻量 HTTP 服务（JDK 自带，无需额外依赖）在运行时随时注入故障。
-    // 注入的是"合成传感器读数"，其余流程（Bigraph 规则、应急响应）完全走真实代码路径。
+    // ==================== Fault Injection ====================
+    // A small built-in HTTP service (from the JDK, no extra dependency) allows faults to be injected at runtime.
+    // What is injected are synthetic sensor readings; everything downstream (bigraph rules, emergency response) follows the real code path.
     //
-    // 用法示例（另开一个终端 curl，或浏览器直接访问）：
-    //   让 D1 电池 Low：       curl "http://localhost:8090/inject/battery?drone=D1&level=Low"
-    //   让 D1 电池 Empty：     curl "http://localhost:8090/inject/battery?drone=D1&level=Empty"
-    //   让 D2 通信 Bad：       curl "http://localhost:8090/inject/comm?drone=D2&state=Bad"
-    //   指定原始电压：         curl "http://localhost:8090/inject/battery?drone=D1&value=3.12"
-    //   清除注入(恢复真实值)： curl "http://localhost:8090/inject/battery?drone=D1&level=clear"
+    // Usage examples (curl from another terminal, or open the URL in a browser):
+    //   Set D1 battery to Low:        curl "http://localhost:8090/inject/battery?drone=D1&level=Low"
+    //   Set D1 battery to Empty:      curl "http://localhost:8090/inject/battery?drone=D1&level=Empty"
+    //   Set D2 communication to Bad:  curl "http://localhost:8090/inject/comm?drone=D2&state=Bad"
+    //   Set a raw voltage:            curl "http://localhost:8090/inject/battery?drone=D1&value=3.12"
+    //   Clear the injection (restore real values): curl "http://localhost:8090/inject/battery?drone=D1&level=clear"
     //                         curl "http://localhost:8090/inject/comm?drone=D2&state=clear"
-    //   查看当前注入状态：     curl "http://localhost:8090/inject/status"
+    //   Show the current injection state:          curl "http://localhost:8090/inject/status"
     private void startFaultInjectionServer() {
         if (!faultInjectionEnabled) {
             System.out.println("Fault-injection HTTP server disabled (fault.injection.enabled=false)");
@@ -2122,7 +2111,7 @@ public class Application3D implements CommandLineRunner {
             server.createContext("/inject/battery", ex -> handleInject(ex, true));
             server.createContext("/inject/comm", ex -> handleInject(ex, false));
             server.createContext("/inject/status", this::handleInjectStatus);
-            server.setExecutor(null); // 使用默认 executor
+            server.setExecutor(null); // use the default executor
             server.start();
             System.out.println("\n========================================");
             System.out.println("✓ Fault-injection HTTP server listening on port " + faultInjectionPort);
@@ -2135,7 +2124,7 @@ public class Application3D implements CommandLineRunner {
         }
     }
 
-    /** 处理 /inject/battery 与 /inject/comm；battery=true 表示电池注入，否则通信注入 */
+    /** Handles /inject/battery and /inject/comm; battery=true means a battery injection, otherwise a communication injection */
     private void handleInject(HttpExchange ex, boolean battery) throws IOException {
         Map<String, String> q = parseQuery(ex.getRequestURI().getRawQuery());
         String drone = q.get("drone");
@@ -2161,7 +2150,7 @@ public class Application3D implements CommandLineRunner {
         respond(ex, 200, "OK: " + drone + " " + msg + "\n");
     }
 
-    /** 设置电池注入。返回描述字符串；非法值返回 null。 */
+    /** Sets a battery injection. Returns a description string, or null for an invalid value. */
     private String applyBatteryInjection(DroneStatus st, String level) {
         Double v;
         switch (level.toLowerCase(Locale.ROOT)) {
@@ -2175,11 +2164,11 @@ public class Application3D implements CommandLineRunner {
                 try { v = Double.parseDouble(level); } catch (NumberFormatException e) { return null; }
         }
         st.injectedBatteryVoltage = v;
-        st.batteryVoltage = v; // 立即生效，不必等下一条 ROS 消息
+        st.batteryVoltage = v; // takes effect immediately, without waiting for the next ROS message
         return "battery injected -> " + String.format(Locale.ROOT, "%.2fV", v);
     }
 
-    /** 设置通信注入。返回描述字符串；非法值返回 null。 */
+    /** Sets a communication injection. Returns a description string, or null for an invalid value. */
     private String applyCommInjection(DroneStatus st, String state) {
         Integer r;
         switch (state.toLowerCase(Locale.ROOT)) {
@@ -2192,11 +2181,11 @@ public class Application3D implements CommandLineRunner {
                 try { r = Integer.parseInt(state); } catch (NumberFormatException e) { return null; }
         }
         st.injectedRssi = r;
-        st.rssi = r; // 立即生效
+        st.rssi = r; // takes effect immediately
         return "comm injected -> RSSI " + r;
     }
 
-    /** 处理 /inject/status：返回所有无人机当前的注入与状态 */
+    /** Handles /inject/status: returns the current injection and state of every drone */
     private void handleInjectStatus(HttpExchange ex) throws IOException {
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, DroneStatus> e : droneStatuses.entrySet()) {
@@ -2241,28 +2230,28 @@ public class Application3D implements CommandLineRunner {
             System.out.println("========================================\n");
             
             while (true) {
-                TimeUnit.MILLISECONDS.sleep(1000);  // 每秒检查一次
+                TimeUnit.MILLISECONDS.sleep(1000);  // Check once per second
                 
                 if (!rosUpdateEnabled) {
                     continue;
                 }
                 
-                // 检查每架无人机的状态并应用规则
+                // Check the state of each drone and apply the matching rules
                 for (Map.Entry<String, DroneStatus> entry : droneStatuses.entrySet()) {
                     String droneId = entry.getKey();
                     DroneStatus status = entry.getValue();
                     
                     try {
-                        // 检查电池状态
+                        // Check the battery state
                         checkAndApplyBatteryRule(droneId, status);
                         
-                        // 检查通信状态
+                        // Check the communication state
                         checkAndApplyCommunicationRule(droneId, status);
                         
-                        // 检查并触发应急响应
+                        // Checks for and triggers an emergency response
                         checkAndTriggerEmergencyResponse(droneId, status);
 
-                        // 检查应急状态恢复（通信恢复）
+                        // Check for recovery from the emergency state (communication restored)
                         checkEmergencyRecovery(droneId, status);
                     } catch (Exception e) {
                         System.err.println("  !! Error processing " + droneId + " status monitoring: " + e.getMessage());
@@ -2276,15 +2265,15 @@ public class Application3D implements CommandLineRunner {
         }
     }
     
-    /** 检查并应用电池状态转换规则 */
+    /** Checks and applies the battery state-transition rules */
     private void checkAndApplyBatteryRule(String droneId, DroneStatus status) {
         long timeSinceTakeoff = System.currentTimeMillis() - status.takeoffTime;
         boolean inTakeoffProtection = (timeSinceTakeoff < TAKEOFF_PROTECTION_MS) && 
                 status.takeoffCommandSent && !status.takeoffRuleApplied;
         
-        // 连续应用转换，直到电池状态与当前电压一致。
-        // 关键：注入 Empty(如 3.0V) 时，一个监测周期内 Normal→Low→Empty 会全部完成，
-        // 使随后的应急检查直接看到 Empty 并触发就地降落，而不会中途停在 Low 触发返航。
+        // Apply transitions repeatedly until the battery state matches the current voltage.
+        // Important: when Empty is injected (e.g. 3.0 V), Normal -> Low -> Empty completes within a single monitoring cycle,
+        // so the following emergency check sees Empty and triggers a landing in place, instead of stopping at Low and triggering a return to base.
         boolean changed = true;
         while (changed) {
             changed = false;
@@ -2323,7 +2312,7 @@ public class Application3D implements CommandLineRunner {
         }
     }
     
-    /** 检查并应用通信状态转换规则 */
+    /** Checks and applies the communication state-transition rules */
     private void checkAndApplyCommunicationRule(String droneId, DroneStatus status) {
         try {
             if (status.rssi >= RSSI_BAD_THRESHOLD && !"Bad".equals(status.communicationStatus)) {
@@ -2343,7 +2332,7 @@ public class Application3D implements CommandLineRunner {
         status.communicationRuleApplied = true;
     }
     
-    /** 检查并触发应急响应 */
+    /** Checks for and triggers an emergency response */
     private void checkAndTriggerEmergencyResponse(String droneId, DroneStatus status) {
         if (!status.hasTakenOff) return;
 
@@ -2351,8 +2340,8 @@ public class Application3D implements CommandLineRunner {
         boolean emptyBattery = "Empty".equals(status.batteryLevel);
         boolean badComm = "Bad".equals(status.communicationStatus);
 
-        // 已在应急中：只允许"升级"到更高优先级——电池耗尽(Empty)必须就地降落，
-        // 覆盖正在进行的 Low 返航 / BAD_COMM 返航（对应论文中"就地降落优先于长距离返航"）。
+        // Already in an emergency: only an escalation to a higher priority is allowed - an empty battery must land in place,
+        // overriding an in-progress Low or BAD_COMM return to base (the paper's "landing in place takes priority over a long return flight").
         if (status.isInEmergency) {
             boolean alreadyLanding = "EMPTY_BATTERY".equals(status.emergencyType)
                     || "LOW_BATTERY_BAD_COMM".equals(status.emergencyType);
@@ -2379,7 +2368,7 @@ public class Application3D implements CommandLineRunner {
         }
     }
     
-    /** 触发紧急降落 */
+    /** Triggers an emergency landing */
     private void triggerEmergencyLanding(String droneId, DroneStatus status, String emergencyType) {
         System.out.println("\n🚨 [EMERGENCY] " + droneId + " " + emergencyType);
         
@@ -2396,7 +2385,7 @@ public class Application3D implements CommandLineRunner {
         System.out.println("  → Emergency target: " + emergencyLandingPoint);
     }
     
-    /** 触发返回充电 */
+    /** Triggers a return to a charging station */
     private void triggerReturnForRecharge(String droneId, DroneStatus status) {
         System.out.println("\n⚠️ [LOW_BATTERY] " + droneId + " (" + String.format("%.2fV", status.batteryVoltage) + ")");
         
@@ -2415,11 +2404,11 @@ public class Application3D implements CommandLineRunner {
         double distToHome = (startPoint != null) ? heuristic(currentPoint, startPoint) : Double.MAX_VALUE;
         
         if (selectedStation != null && heuristic(currentPoint, selectedStation) <= distToHome) {
-            // 有充电站且距离更近，去充电站
+            // A charging station exists and is closer - head for the charging station
             status.emergencyTarget = selectedStation;
             System.out.println("  → Charging Station: " + selectedStation);
         } else if (startPoint != null) {
-            // 没有可用充电站或充电站更远，返航到起点
+            // No usable charging station, or it is further away - return to the start point
             status.emergencyTarget = startPoint;
             if (selectedStation == null) {
                 String reason = chargingStations.isEmpty() 
@@ -2430,14 +2419,14 @@ public class Application3D implements CommandLineRunner {
                 System.out.println("  → Start point is closer, returning to: " + startPoint);
             }
         } else {
-            // 起点也不存在（异常情况），紧急降落
+            // The start point is missing too (an abnormal case) - perform an emergency landing
             System.err.println("  !! No start point available, triggering emergency landing");
             triggerEmergencyLanding(droneId, status, "LOW_BATTERY");
             return;
         }
     }
     
-    /** 触发返回起点 */
+    /** Triggers a return to the start point */
     private void triggerReturnToHome(String droneId, DroneStatus status) {
         System.out.println("\n📡 [BAD_COMM] " + droneId + " (RSSI: " + status.rssi + ")");
         
@@ -2487,7 +2476,7 @@ public class Application3D implements CommandLineRunner {
     }
     
     
-    /** 检查应急状态恢复（通信恢复日志） */
+    /** Checks for recovery from the emergency state (logs communication recovery) */
     private void checkEmergencyRecovery(String droneId, DroneStatus status) {
         if ("BAD_COMM".equals(status.emergencyType) && "Normal".equals(status.communicationStatus)) {
             System.out.println("📡 [INFO] " + droneId + " Comm recovered, continuing home");
@@ -2495,21 +2484,21 @@ public class Application3D implements CommandLineRunner {
     }
     
     // ========================================
-    // ROS2 订阅和位置管理
+    // ROS2 subscriptions and position management
     // ========================================
     
     /**
-     * 订阅 ROS2 话题获取无人机位置
-     * @param host ROS bridge 主机地址
-     * @param topic 话题名称
-     * @param type 消息类型
-     * @param handler 消息处理器
+     * Subscribes to a ROS2 topic to obtain drone positions
+     * @param host ROS bridge host address
+     * @param topic topic name
+     * @param type message type
+     * @param handler message handler
      */
-    // 共享的 rosbridge 连接：所有 topic 订阅复用同一个 WebSocket，避免每个 topic 各建一条连接、
-    // 在多机/多 topic 时出现 "Could not create WebSocket: Connection failed"（尤其 sim 模式）。
+    // Shared rosbridge connection: every topic subscription reuses one WebSocket, instead of opening a connection per topic,
+    // which otherwise causes "Could not create WebSocket: Connection failed" with many drones or topics (especially in sim mode).
     private Ros sharedRos;
 
-    /** 确保共享 rosbridge 连接已建立；成功返回 true。 */
+    /** Ensures the shared rosbridge connection is up; returns true on success. */
     private synchronized boolean ensureRosConnected(String host) {
         if (sharedRos != null) {
             return true;
@@ -2550,7 +2539,7 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 初始化所有无人机的 ROS2 订阅
+     * Initialises the ROS2 subscriptions for every drone
      */
     private void initializeRosSubscriptions() {
         if (!rosUpdateEnabled) {
@@ -2568,19 +2557,19 @@ public class Application3D implements CommandLineRunner {
         System.out.println("Drone Count: " + configuredDroneCount);
         System.out.println("ROS Sim Mode: " + rosSimMode);
         
-        // 初始化所有无人机位置和状态为默认值
+        // Initialise the position and status of every drone to defaults
         for (int i = 0; i < configuredDroneCount; i++) {
             String droneId = "D" + i;
-            // 初始化为默认位置（第1层左下角，网格索引 i）
+            // Initialise to the default position (layer 1, bottom-left corner, grid index i)
             dronePositions.put(droneId, new DronePosition(droneId, 0, 0, 0, i));
-            // 初始化状态
+            // Initialise the status
             droneStatuses.put(droneId, new DroneStatus(droneId));
         }
         System.out.println("✓ Initialized default positions and status for " + configuredDroneCount + " drones");
         
-        // 位置订阅：根据是否为仿真模式，选择单 topic 或多 topic
+        // Position subscription: one topic in simulation mode, one topic per drone otherwise
         if (rosSimMode) {
-            // 仿真模式：从 /cf_positions_path (nav_msgs/Path) 获取，根据 poses[].header.frame_id 识别 cf231/cf232/...
+            // Simulation mode: read from /cf_positions_path (nav_msgs/Path), identifying cf231/cf232/... via poses[].header.frame_id
             subscribeRosTopic(rosBridgeHost, "/cf_positions_path", "nav_msgs/Path", message -> {
                 try {
                     JsonObject jsonObject = message.toJsonObject();
@@ -2598,7 +2587,7 @@ public class Application3D implements CommandLineRunner {
                             continue;
                         }
                         String frameId = header.getString("frame_id");
-                        // frame_id 如 "cf231", "cf232", "cf233" -> 231,232,233 -> D0, D1, D2
+                        // frame_id such as "cf231", "cf232", "cf233" -> 231,232,233 -> D0, D1, D2
                         int cfNumber;
                         try {
                             if (!frameId.startsWith("cf")) {
@@ -2654,7 +2643,7 @@ public class Application3D implements CommandLineRunner {
                 }
             });
         } else {
-            // 实际模式：每架无人机订阅各自的 /cfXXX/pose
+            // Real mode: each drone subscribes to its own /cfXXX/pose
             for (int i = 0; i < configuredDroneCount; i++) {
                 int droneIndex = i;
                 String droneId = "D" + i;
@@ -2711,7 +2700,7 @@ public class Application3D implements CommandLineRunner {
             }
         }
         
-        // 状态话题（电池电压和RSSI）始终按每架无人机单独订阅
+        // The status topic (battery voltage and RSSI) is always subscribed per drone
         for (int i = 0; i < configuredDroneCount; i++) {
             String droneId = "D" + i;
             int cfNumber = 231 + i;
@@ -2726,7 +2715,7 @@ public class Application3D implements CommandLineRunner {
                         
                         DroneStatus status = droneStatuses.get(droneId);
                         if (status != null) {
-                            // 若存在故障注入覆盖，则忽略真实读数，改用注入值（清除注入后自动恢复真实值）
+                            // If a fault injection override is active, ignore the real reading and use the injected value (clearing the injection restores the real value)
                             status.batteryVoltage = (status.injectedBatteryVoltage != null)
                                     ? status.injectedBatteryVoltage : batteryVoltage;
                             status.rssi = (status.injectedRssi != null)
@@ -2743,66 +2732,66 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 将世界坐标转换为3D网格索引
+     * Converts world coordinates to a 3D grid index
      * 
-     * 网格布局说明（3D版本）：
-     * - 网格中心点坐标：(gridOriginX + xIndex * gridStepX, gridOriginY + yIndex * gridStepY, gridOriginZ + layerIndex * layerHeight)
-     * - 网格边界：中心点 ± gridStep/2 (XY平面), ± layerHeight/2 (Z轴)
-     * - 层级判断：0 <= z < 0.3 第1层, 0.3 <= z < 0.6 第2层, 以此类推
-     * - 公式：index = layerIndex * (bigridCols * bigridRows) + xIndex * bigridRows + yIndex
+     * Grid layout (3D):
+     * - cell centre: (gridOriginX + xIndex * gridStepX, gridOriginY + yIndex * gridStepY, gridOriginZ + layerIndex * layerHeight)
+     * - cell bounds: centre +/- gridStep/2 in the XY plane, +/- layerHeight/2 along Z
+     * - layer selection: 0 <= z < 0.3 is layer 1, 0.3 <= z < 0.6 is layer 2, and so on
+     * - formula: index = layerIndex * (bigridCols * bigridRows) + xIndex * bigridRows + yIndex
      * 
-     * 示例（5x5x3）：
-     * - 第1层（layer 0）：Grid[0-24]，右下角Grid[0]到左上角Grid[24]
-     * - 第2层（layer 1）：Grid[25-49]，右下角Grid[25]到左上角Grid[49]
-     * - 第3层（layer 2）：Grid[50-74]，右下角Grid[50]到左上角Grid[74]
+     * Example (5x5x3):
+     * - layer 0: Grid[0-24], from Grid[0] at the bottom right to Grid[24] at the top left
+     * - layer 1: Grid[25-49], from Grid[25] at the bottom right to Grid[49] at the top left
+     * - layer 2: Grid[50-74], from Grid[50] at the bottom right to Grid[74] at the top left
      * 
-     * @param x 世界坐标 X
-     * @param y 世界坐标 Y
-     * @param z 世界坐标 Z
-     * @return 网格索引（0-based），如果超出范围返回 -1
+     * @param x world coordinate X
+     * @param y world coordinate Y
+     * @param z world coordinate Z
+     * @return the 0-based grid index, or -1 if out of range
      */
     private int coordinateToGridIndex(double x, double y, double z) {
-        // 容差值，用于处理浮点数精度问题
+        // Tolerance used to absorb floating-point precision issues
         final double EPSILON = 1e-6;
         
-        // 处理 -0.0 的情况，将其视为 0.0
+        // Treat -0.0 as 0.0
         if (Math.abs(x) < EPSILON) x = 0.0;
         if (Math.abs(y) < EPSILON) y = 0.0;
         if (Math.abs(z) < EPSILON) z = 0.0;
         
-        // 计算相对于网格原点的偏移
+        // Compute the offset relative to the grid origin
         double relX = x - gridOriginX;
         double relY = y - gridOriginY;
         double relZ = z - gridOriginZ;
         
-        // 使用四舍五入计算XY索引
+        // Compute the XY indices by rounding
         int xIndex = (int) Math.round(relX / gridStepX);
         int yIndex = (int) Math.round(relY / gridStepY);
         
-        // 计算层索引（Z轴）：使用floor来确定在哪一层
+        // Compute the layer index along Z, using floor to decide which layer it falls in
         // 0 <= z < 0.3 -> layer 0
         // 0.3 <= z < 0.6 -> layer 1
         // 0.6 <= z < 0.9 -> layer 2
         int layerIndex = (int) Math.floor(relZ / layerHeight);
 
-        // 检查是否在有效范围内
+        // Check that the indices are in range
         if (xIndex < 0 || xIndex >= bigridCols || 
             yIndex < 0 || yIndex >= bigridRows || 
             layerIndex < 0 || layerIndex >= bigridLayers) {
-            return -1; // 超出网格范围
+            return -1; // outside the grid
         }
         
-        // 计算3D线性索引
-        // 每层有 bigridCols * bigridRows 个格子
-        // 同层内：X列优先，即同一X列的Y依次排列
+        // Compute the linear 3D index
+        // each layer has bigridCols * bigridRows cells
+        // within a layer, X-major: cells of the same X column are listed by increasing Y
         int index = layerIndex * (bigridCols * bigridRows) + xIndex * bigridRows + yIndex;
         
         return index;
     }
     
     // /**
-    //  * 将世界坐标转换为网格索引（2D版本，用于兼容性）
-    //  * @deprecated 请使用3D版本 coordinateToGridIndex(x, y, z)
+    //  * Converts world coordinates to a grid index (2D version, kept for compatibility)
+    //  * @deprecated use the 3D version coordinateToGridIndex(x, y, z)
     //  */
     // @Deprecated
     // private int coordinateToGridIndex(double x, double y) {
@@ -2810,18 +2799,18 @@ public class Application3D implements CommandLineRunner {
     // }
     
     // ========================================
-    // 路径规划和导航
+    // Path planning and navigation
     // ========================================
     
     /**
-     * 解析目标点配置，并初始化充电站、障碍物和无人机起始位置
+     * Parses the target configuration and initialises the charging stations, obstacles and drone start positions
      */
     private void parseDroneTargets() {
         System.out.println("\n========================================");
         System.out.println("Parsing drone target points, charging station, and obstacles");
         System.out.println("========================================");
         
-        // 初始化障碍物栅格（支持多个障碍物，用逗号分隔）
+        // Initialise the obstacle grids (multiple obstacles, comma separated)
         obstacleGrids.clear();
         if (obstacleGridsConfig != null && !obstacleGridsConfig.trim().isEmpty()) {
             String[] grids = obstacleGridsConfig.split(",");
@@ -2848,7 +2837,7 @@ public class Application3D implements CommandLineRunner {
             System.out.println("  (No obstacles configured)");
         }
         
-        // 初始化充电站位置（支持多个充电站，用逗号分隔）
+        // Initialise the charging-station positions (multiple stations, comma separated)
         chargingStations.clear();
         if (chargingStationGrids != null && !chargingStationGrids.trim().isEmpty()) {
             String[] grids = chargingStationGrids.split(",");
@@ -2883,26 +2872,26 @@ public class Application3D implements CommandLineRunner {
                     double x = Double.parseDouble(coords[0].trim());
                     double y = Double.parseDouble(coords[1].trim());
                     
-                    // 目标点使用第1层的Z坐标进行网格索引计算（假设目标在第1层）
-                    // 但实际飞行高度由无人机当前高度决定，不需要改变
-                    double targetZ = gridOriginZ;  // 第1层
+                    // The target uses the layer-0 Z coordinate for the grid-index calculation (targets are assumed to be on layer 0)
+                    // but the actual flight altitude follows the drone's current altitude and is not changed
+                    double targetZ = gridOriginZ;  // layer 0
                     int gridIndex = coordinateToGridIndex(x, y, targetZ);
                     
                     String droneId = "D" + i;
-                    // 目标点的Z坐标设为第1层的高度（仅用于网格索引，不影响实际飞行高度）
+                    // The target Z is set to the layer-0 altitude (used only for the grid index, it does not affect the flight altitude)
                     droneTargets.put(droneId, new GridPoint(x, y, targetZ, gridIndex));
                     System.out.println("  " + droneId + " target: (" + x + ", " + y + ") -> Grid[" + gridIndex + "] (Layer 1)");
                     
-                    // 【修复】记录无人机的起始位置（从ROS2实际位置获取，而不是循环索引）
+                    // Record the drone start position from the real ROS2 position rather than from the loop index
                     DroneStatus status = droneStatuses.get(droneId);
                     DronePosition currentPos = dronePositions.get(droneId);
                     if (status != null) {
-                        // 使用ROS2报告的实际位置作为起始位置
+                        // Use the position reported by ROS2 as the start position
                         if (currentPos != null && currentPos.gridIndex >= 0) {
                             status.startGridIndex = currentPos.gridIndex;
                             System.out.println("  " + droneId + " start position: Grid[" + currentPos.gridIndex + "] (from ROS2)");
                         } else {
-                            // 如果还没有ROS2数据，使用默认位置
+                            // Fall back to the default position if no ROS2 data has arrived yet
                             status.startGridIndex = i;
                             System.out.println("  " + droneId + " start position: Grid[" + i + "] (default)");
                         }
@@ -2917,7 +2906,7 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 从3D网格索引计算中心坐标
+     * Computes the centre coordinates of a 3D grid index
      */
     private GridPoint gridIndexToPoint(int gridIndex) {
         int totalGridsPerLayer = bigridCols * bigridRows;
@@ -2925,15 +2914,15 @@ public class Application3D implements CommandLineRunner {
             return null;
         }
         
-        // 计算层索引
+        // Compute the layer index
         int layerIndex = gridIndex / totalGridsPerLayer;
         int indexInLayer = gridIndex % totalGridsPerLayer;
         
-        // 计算XY索引
+        // Compute the XY indices
         int xIndex = indexInLayer / bigridRows;
         int yIndex = indexInLayer % bigridRows;
         
-        // 计算世界坐标
+        // Compute the world coordinates
         double x = gridOriginX + xIndex * gridStepX;
         double y = gridOriginY + yIndex * gridStepY;
         double z = gridOriginZ + layerIndex * layerHeight;
@@ -2942,7 +2931,7 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 获取3D网格的邻居（10个方向：8个水平+2个垂直）
+     * Returns the neighbours of a 3D grid cell (10 directions: 8 horizontal, 2 vertical)
      */
     private List<GridPoint> getNeighbors(int gridIndex) {
         List<GridPoint> neighbors = new ArrayList<>();
@@ -2954,20 +2943,20 @@ public class Application3D implements CommandLineRunner {
         int xIndex = indexInLayer / bigridRows;
         int yIndex = indexInLayer % bigridRows;
         
-        // 10个方向：8个水平方向 + 2个垂直方向
-        // 水平方向（同一层）：左、右、下、上、左下、左上、右下、右上
+        // 10 directions: 8 horizontal plus 2 vertical
+        // horizontal directions within a layer: left, right, down, up, down-left, up-left, down-right, up-right
         int[][] horizontalDirections = {
-            {-1, 0, 0},  // 左
-            {1, 0, 0},   // 右
-            {0, -1, 0},  // 下
-            {0, 1, 0},   // 上
-            {-1, -1, 0}, // 左下
-            {-1, 1, 0},  // 左上
-            {1, -1, 0},  // 右下
-            {1, 1, 0}    // 右上
+            {-1, 0, 0},  // left
+            {1, 0, 0},   // right
+            {0, -1, 0},  // down
+            {0, 1, 0},   // up
+            {-1, -1, 0}, // down-left
+            {-1, 1, 0},  // up-left
+            {1, -1, 0},  // down-right
+            {1, 1, 0}    // up-right
         };
         
-        // 添加水平邻居
+        // Add the horizontal neighbours
         for (int[] dir : horizontalDirections) {
             int newX = xIndex + dir[0];
             int newY = yIndex + dir[1];
@@ -2984,8 +2973,8 @@ public class Application3D implements CommandLineRunner {
             }
         }
         
-        // 添加垂直邻居（上层和下层）
-        // 向上（layer + 1）
+        // Add the vertical neighbours (the layer above and below)
+        // upwards (layer + 1)
         if (layerIndex + 1 < bigridLayers) {
             int upIndex = (layerIndex + 1) * totalGridsPerLayer + xIndex * bigridRows + yIndex;
             GridPoint upPoint = gridIndexToPoint(upIndex);
@@ -2994,7 +2983,7 @@ public class Application3D implements CommandLineRunner {
             }
         }
         
-        // 向下（layer - 1）
+        // downwards (layer - 1)
         if (layerIndex - 1 >= 0) {
             int downIndex = (layerIndex - 1) * totalGridsPerLayer + xIndex * bigridRows + yIndex;
             GridPoint downPoint = gridIndexToPoint(downIndex);
@@ -3007,28 +2996,28 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 计算两点之间的3D欧几里得距离（启发式函数）
+     * Computes the 3D Euclidean distance between two points (the heuristic)
      */
     private double heuristic(GridPoint a, GridPoint b) {
         return Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2) + Math.pow(a.z - b.z, 2));
     }
     
     /**
-     * 动态A*规划：每次移动前重新规划最短路径的下一步
-     * @param droneId 无人机ID
-     * @param start 起点
-     * @param goal 终点
-     * @return 下一步要移动到的grid，如果无法规划则返回null
+     * Dynamic A* planning: replans the next step of the shortest path before every move
+     * @param droneId drone ID
+     * @param start start point
+     * @param goal goal point
+     * @return the next grid to move into, or null if no path can be planned
      */
     private GridPoint planNextStep(String droneId, GridPoint start, GridPoint goal) {
         if (start.gridIndex == goal.gridIndex) {
-            return null;  // 已到达目标
+            return null;  // already at the target
         }
         
-        // 获取当前障碍物（其他无人机的位置）
+        // Collect the current obstacles (the positions of the other drones)
         Set<Integer> occupiedGrids = getOccupiedGrids(droneId);
         
-        // 加入临时规避格子（绕行时记录的被阻塞格子，30秒后过期）
+        // Add the temporary avoid-set (cells recorded as blocked while detouring, expiring after 30 seconds)
         DroneStatus planStatus = droneStatuses.get(droneId);
         if (planStatus != null && !planStatus.avoidGrids.isEmpty()) {
             if (System.currentTimeMillis() - planStatus.avoidGridsSetTime < 30000) {
@@ -3038,10 +3027,10 @@ public class Application3D implements CommandLineRunner {
             }
         }
         
-        // 使用A*规划完整路径
+        // Plan the full path with A*
         List<GridPoint> fullPath = planPath(start, goal, occupiedGrids);
 
-        // 日志：输出完整路径（如果存在）
+        // Log the full path, if one was found
         if (!fullPath.isEmpty()) {
             StringBuilder sb = new StringBuilder();
             sb.append("  [Full Path] ").append(droneId).append(": ");
@@ -3059,19 +3048,19 @@ public class Application3D implements CommandLineRunner {
         }
         
         if (fullPath.isEmpty() || fullPath.size() < 2) {
-            return null;  // 无法规划路径
+            return null;  // no path could be planned
         }
         
-        // 返回路径的下一步（索引1，索引0是起点）
+        // Return the next step of the path (index 1; index 0 is the start)
         return fullPath.get(1);
     }
     
     /**
-     * A*路径规划算法
-     * @param start 起点
-     * @param goal 终点
-     * @param occupiedGrids 被占用的网格（需要避开）
-     * @return 路径点列表（从起点到终点）
+     * A* path-planning algorithm
+     * @param start start point
+     * @param goal goal point
+     * @param occupiedGrids the occupied grids, which must be avoided
+     * @return the list of path points, from start to goal
      */
     private List<GridPoint> planPath(GridPoint start, GridPoint goal, Set<Integer> occupiedGrids) {
         PriorityQueue<AStarNode> openSet = new PriorityQueue<>();
@@ -3084,37 +3073,37 @@ public class Application3D implements CommandLineRunner {
         while (!openSet.isEmpty()) {
             AStarNode current = openSet.poll();
             
-            // 到达目标
+            // Goal reached
             if (current.point.gridIndex == goal.gridIndex) {
                 return reconstructPath(current);
             }
             
             closedSet.add(current.point.gridIndex);
             
-            // 探索邻居
+            // Explore the neighbours
             for (GridPoint neighbor : getNeighbors(current.point.gridIndex)) {
-                // 跳过已访问的节点
+                // Skip nodes that have already been visited
                 if (closedSet.contains(neighbor.gridIndex)) {
                     continue;
                 }
                 
-                // 跳过被占用的网格（但目标点除外）
+                // Skip occupied grids, except the goal itself
                 if (occupiedGrids.contains(neighbor.gridIndex) && neighbor.gridIndex != goal.gridIndex) {
                     continue;
                 }
                 
-                // 计算代价（3D版本：对角线移动和垂直移动代价更高）
+                // Compute the cost (in 3D, diagonal and vertical moves cost more)
                 boolean isDiagonalXY = Math.abs(neighbor.x - current.point.x) > 0.5 && 
                                       Math.abs(neighbor.y - current.point.y) > 0.5;
                 boolean isVertical = Math.abs(neighbor.z - current.point.z) > 0.01;
                 
                 double moveCost;
                 if (isDiagonalXY && !isVertical) {
-                    moveCost = Math.sqrt(2);  // 水平对角线移动
+                    moveCost = Math.sqrt(2);  // horizontal diagonal move
                 } else if (isVertical && !isDiagonalXY) {
-                    moveCost = 1.5;  // 垂直移动（稍高代价，优先考虑水平移动）
+                    moveCost = 1.5;  // vertical move (slightly more expensive, so horizontal moves are preferred)
                 } else {
-                    moveCost = 1.0;  // 直线移动
+                    moveCost = 1.0;  // straight move
                 }
                 
                 double tentativeGScore = current.gCost + moveCost;
@@ -3127,30 +3116,30 @@ public class Application3D implements CommandLineRunner {
             }
         }
         
-        // 没有找到路径
+        // No path found
         return new ArrayList<>();
     }
     
     /**
-     * 重建路径
+     * Reconstructs the path
      */
     private List<GridPoint> reconstructPath(AStarNode node) {
         List<GridPoint> path = new ArrayList<>();
         AStarNode current = node;
         while (current != null) {
-            path.add(0, current.point);  // 插入到开头
+            path.add(0, current.point);  // insert at the front
             current = current.parent;
         }
         return path;
     }
     
     /**
-     * 获取所有其他无人机当前占用的网格（包括障碍物栅格 + 已被其他无人机预订的grid）
+     * Returns every grid currently occupied by another drone, plus obstacle grids and grids reserved by other drones
      */
     private Set<Integer> getOccupiedGrids(String excludeDroneId) {
         Set<Integer> occupied = new HashSet<>();
         
-        // 添加其他无人机占用的网格（真实位置）
+        // Add the grids occupied by the other drones (their real positions)
         for (Map.Entry<String, DronePosition> entry : dronePositions.entrySet()) {
             if (!entry.getKey().equals(excludeDroneId)) {
                 DronePosition pos = entry.getValue();
@@ -3160,10 +3149,10 @@ public class Application3D implements CommandLineRunner {
             }
         }
         
-        // 添加障碍物栅格（障碍物永远被占用，无人机不能进入）
+        // Add the obstacle grids (permanently occupied, no drone may enter)
         occupied.addAll(obstacleGrids);
         
-        // 添加被其他无人机预订的grid（视为临时障碍，当前无人机在A*规划时会绕开）
+        // Add grids reserved by other drones (treated as temporary obstacles that A* routes around)
         for (Map.Entry<Integer, GridReservation> entry : gridReservations.entrySet()) {
             GridReservation reservation = entry.getValue();
             if (!reservation.droneId.equals(excludeDroneId)) {
@@ -3175,45 +3164,45 @@ public class Application3D implements CommandLineRunner {
     }
     
     // ========================================
-    // Grid预订系统（同步锁机制）
+    // Grid reservation system (lock based)
     // ========================================
     
     /**
-     * 尝试预订一个grid
-     * @param droneId 无人机ID
-     * @param gridIndex 要预订的grid索引
-     * @return true 如果预订成功，false 如果grid已被其他无人机预订
+     * Tries to reserve a grid
+     * @param droneId drone ID
+     * @param gridIndex index of the grid to reserve
+     * @return true if the reservation succeeded, false if another drone already holds it
      */
     private boolean tryReserveGrid(String droneId, int gridIndex) {
         GridReservation existingReservation = gridReservations.get(gridIndex);
         
-        // 如果已经被预订
+        // Already reserved
         if (existingReservation != null) {
-            // 如果是自己预订的，返回成功
+            // Reserved by this drone - report success
             if (existingReservation.droneId.equals(droneId)) {
                 return true;
             }
-            // 被其他无人机预订，返回失败
+            // Reserved by another drone - report failure
             return false;
         }
         
-        // 尝试预订（使用ConcurrentHashMap的原子操作）
+        // Try to reserve it, using the atomic ConcurrentHashMap operation
         GridReservation newReservation = new GridReservation(droneId, System.currentTimeMillis());
         GridReservation previous = gridReservations.putIfAbsent(gridIndex, newReservation);
         
-        // 如果previous为null，说明预订成功
+        // A null previous value means the reservation succeeded
         if (previous == null) {
             return true;
         }
         
-        // 如果previous不为null，检查是否是自己的预订
+        // Otherwise check whether this drone already held the reservation
         return previous.droneId.equals(droneId);
     }
     
     /**
-     * 释放grid预订
-     * @param droneId 无人机ID
-     * @param gridIndex 要释放的grid索引
+     * Releases a grid reservation
+     * @param droneId drone ID
+     * @param gridIndex index of the grid to release
      */
     private void releaseGrid(String droneId, int gridIndex) {
         GridReservation reservation = gridReservations.get(gridIndex);
@@ -3223,17 +3212,17 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 释放无人机的所有grid预订
-     * @param droneId 无人机ID
+     * Releases every grid reservation held by a drone
+     * @param droneId drone ID
      */
     private void releaseAllGrids(String droneId) {
         gridReservations.entrySet().removeIf(entry -> entry.getValue().droneId.equals(droneId));
     }
     
     /**
-     * 检查grid是否被预订
-     * @param gridIndex grid索引
-     * @return 预订该grid的无人机ID，如果未被预订则返回null
+     * Checks whether a grid is reserved
+     * @param gridIndex grid index
+     * @return the ID of the drone holding the reservation, or null if the grid is free
      */
     private String getGridReservation(int gridIndex) {
         GridReservation reservation = gridReservations.get(gridIndex);
@@ -3241,11 +3230,11 @@ public class Application3D implements CommandLineRunner {
     }
     
     // ========================================
-    // 碰撞检测
+    // Collision detection
     // ========================================
     
     /**
-     * 检测碰撞风险：如果两架或更多无人机在同一个网格
+     * Detects a collision risk: two or more drones in the same grid
      */
     private void checkCollisionRisk() {
         Map<Integer, List<String>> gridOccupancy = new HashMap<>();
@@ -3274,9 +3263,9 @@ public class Application3D implements CommandLineRunner {
             }
         }
 
-        // 去抖 + 飞行阶段过滤：只有当某格连续 violationDebounceFrames 帧都被"≥2架已起飞无人机"占用时，
-        // 才计一次真违规。过滤两类假重叠：(a) 单帧/短闪跳（边界抖动、异步残影）；
-        // (b) 起飞前地面/仿真初始化阶段的位置重叠（互斥是飞行阶段的性质，地面 spawn 重叠不算）。
+        // Debounce plus flight-phase filtering: a violation is counted only when a cell is occupied by >=2 airborne drones for violationDebounceFrames consecutive frames,
+        // which rules out two kinds of false overlap: (a) single-frame flicker from boundary jitter or asynchronous ghosting;
+        // (b) overlaps on the ground before take-off or during simulation start-up (exclusion is a property of the flight phase, ground spawn overlaps do not count).
         for (Integer gridIndex : currentViolatingGrids) {
             long airborneOccupants = violatingOccupants.get(gridIndex).stream()
                     .filter(id -> {
@@ -3285,8 +3274,8 @@ public class Application3D implements CommandLineRunner {
                     })
                     .count();
             if (airborneOccupants < 2) {
-                // 该格的重叠里不足两架已起飞无人机（地面/起飞前），不计违规；重置其连续帧计数。
-                // 注意：上面的 riskDetected/合并暂停仍按原始检测执行，保持保守。
+                // Fewer than two airborne drones overlap in this cell (on the ground or before take-off): no violation, reset its consecutive-frame counter.
+                // Note: the riskDetected flag and the merge pause above still use the raw detection, staying conservative.
                 coOccupancyStreak.remove(gridIndex);
                 continue;
             }
@@ -3300,7 +3289,7 @@ public class Application3D implements CommandLineRunner {
                         + "; total confirmed = " + total + ")");
             }
         }
-        // 冲突结束的格子：重置其连续帧计数并清除"已计数"标记，使下一次持续冲突可重新计一次。
+        // Cells whose conflict has ended: reset the consecutive-frame counter and clear the counted flag, so the next sustained conflict is counted again.
         coOccupancyStreak.keySet().retainAll(currentViolatingGrids);
         countedViolationGrids.retainAll(currentViolatingGrids);
 
@@ -3494,26 +3483,26 @@ public class Application3D implements CommandLineRunner {
     }
     
     /**
-     * 根据 ROS2 实时位置更新无人机模型
-     * @param siteCount 网格站点数量
-     * @return 更新后的无人机模型
+     * Updates the drone model from the live ROS2 positions
+     * @param siteCount number of grid sites
+     * @return the updated drone model
      */
     private PureBigraph droneModelFromRosPositions(int siteCount) throws InvalidConnectionException, TypeNotExistsException, IncompatibleSignatureException, IncompatibleInterfaceException {
         if (!rosUpdateEnabled || dronePositions.isEmpty()) {
-            // 如果未启用 ROS2 或没有位置数据，使用默认放置策略
+            // Fall back to the default placement if ROS2 is disabled or no position data is available
             return droneModel(siteCount);
         }
         
-        // 检查碰撞风险
+        // Check for a collision risk
         if (collisionRiskDetected.get()) {
             System.err.println("⚠ Collision risk detected, using previous drone model");
-            return dronePart; // 返回当前模型，不更新
+            return dronePart; // return the current model without updating it
         }
         
-        // 创建空的站点列表（包含障碍物）
+        // Build the list of empty sites, including the obstacles
         List<Bigraph<DynamicSignature>> placements = new ArrayList<>();
         for (int i = 0; i < siteCount; i++) {
-            // 检查是否是障碍物栅格
+            // Check whether this is an obstacle grid
             if (obstacleGrids.contains(i)) {
                 placements.add(buildObstacleCell());
             } else {
@@ -3521,15 +3510,15 @@ public class Application3D implements CommandLineRunner {
             }
         }
         
-        // 根据 ROS2 位置放置无人机（使用实际状态）
-        //遍历dronePositions Map中的所有值，pos 包含：droneId, x, y, gridIndex
+        // Place the drones according to their ROS2 positions, using their real status
+        // Iterate over every value in the dronePositions map; pos holds droneId, x, y and gridIndex
         Set<Integer> placedCells = new HashSet<>();
         for (DronePosition pos : dronePositions.values()) {
             int placeIndex = pos.gridIndex;
 
-            // 仅在起飞前(尚未 hasTakenOff)容忍定位漂移：grid=-1 时回退到起始格，
-            // 使其留在模型中并允许正常起飞（takeoff.allow-out-of-grid 控制，可关闭）。
-            // 起飞后不再回退——飞行途中若持续 grid=-1，保持模型与物理严格一致，暴露真实问题。
+            // Positional drift is tolerated only before take-off (while hasTakenOff is false): on grid=-1 fall back to the start cell,
+            // which keeps the drone in the model and lets it take off normally (controlled by takeoff.allow-out-of-grid, and can be disabled).
+            // After take-off there is no fallback: a persistent grid=-1 in flight keeps the model strictly consistent with the physical state and surfaces the real problem.
             if ((placeIndex < 0 || placeIndex >= siteCount) && allowOutOfGridPlacement) {
                 DroneStatus st = droneStatuses.get(pos.droneId);
                 boolean notTakenOff = (st == null) || !st.hasTakenOff;
@@ -3544,22 +3533,22 @@ public class Application3D implements CommandLineRunner {
             }
 
             if (placeIndex >= 0 && placeIndex < siteCount) {
-                // 跳过障碍物栅格，不在障碍物位置放置无人机
+                // Skip obstacle grids; do not place a drone on an obstacle
                 if (obstacleGrids.contains(placeIndex)) {
                     continue;
                 }
 
-                // 获取无人机的实际状态
-                String droneStatus = "Landed";  // 默认状态
+                // Get the actual drone status
+                String droneStatus = "Landed";  // Default status
                 DroneStatus status = droneStatuses.get(pos.droneId);
                 if (status != null) {
                     if (status.landingRuleApplied) {
-                        droneStatus = "Landed";  // 降落规则已应用
+                        droneStatus = "Landed";  // the landing rule has been applied
                     } else if (status.takeoffRuleApplied) {
-                        droneStatus = "flying";  // 起飞规则已应用
+                        droneStatus = "flying";  // the take-off rule has been applied
                     }
                 }
-                //在指定位置放置无人机
+                // Place the drone at the given position
                 placements.set(placeIndex,
                         buildDrone(pos.droneId, droneStatus, "OccupiedBy"));
                 placedCells.add(placeIndex);
@@ -3572,8 +3561,8 @@ public class Application3D implements CommandLineRunner {
     }
 
     /**
-     * 位置落在栅格外(grid=-1)时的回退格：优先无人机起始格，其次按编号(D{idx}->cell idx)。
-     * 返回 -1 表示无有效回退格。
+     * Fallback cell used when the position falls outside the grid (grid=-1): the drone's start cell first, otherwise its number (D{idx} -> cell idx).
+     * Returns -1 when there is no valid fallback cell.
      */
     private int fallbackGridIndex(String droneId, int siteCount) {
         DroneStatus status = droneStatuses.get(droneId);
@@ -3587,13 +3576,13 @@ public class Application3D implements CommandLineRunner {
                 return idx;
             }
         } catch (NumberFormatException ignored) {
-            // droneId 非 "D<number>" 格式，无编号回退
+            // droneId is not in the "D<number>" form, so there is no numeric fallback
         }
         return -1;
     }
 
     /**
-     * 无人机位置信息（3D版本）
+     * Drone position information (3D)
      */
     private static class DronePosition {
         final String droneId;
@@ -3628,7 +3617,7 @@ public class Application3D implements CommandLineRunner {
         volatile double batteryVoltage = 4.2;
         volatile int rssi;
         volatile String batteryLevel = "Normal", communicationStatus = "Normal";
-        // 故障注入覆盖值（null = 使用真实 ROS 读数）。非 null 时，ROS 上报值被忽略，改用注入值。
+        // Fault-injection override (null = use the real ROS reading). When non-null, the value reported by ROS is ignored in favour of the injected one.
         volatile Double injectedBatteryVoltage = null;
         volatile Integer injectedRssi = null;
         volatile boolean batteryRuleApplied, communicationRuleApplied, bigraphBatteryNeedsSync;
@@ -3645,7 +3634,7 @@ public class Application3D implements CommandLineRunner {
         DroneStatus(String droneId) { this.droneId = droneId; }
     }
     
-    // 3D网格点类
+    // 3D grid point
     private static class GridPoint {
         final double x;
         final double y;
@@ -3678,12 +3667,12 @@ public class Application3D implements CommandLineRunner {
         }
     }
     
-    // A*算法节点类
+    // A* search node
     private static class AStarNode implements Comparable<AStarNode> {
         final GridPoint point;
         final AStarNode parent;
-        final double gCost;  // 从起点到当前点的实际代价
-        final double hCost;  // 从当前点到终点的启发式代价
+        final double gCost;  // actual cost from the start to this point
+        final double hCost;  // heuristic cost from this point to the goal
         final double fCost;  // gCost + hCost
         
         AStarNode(GridPoint point, AStarNode parent, double gCost, double hCost) {
@@ -3700,10 +3689,10 @@ public class Application3D implements CommandLineRunner {
         }
     }
     
-    // Grid预订信息类
+    // Grid reservation record
     private static class GridReservation {
-        final String droneId;           // 预订该grid的无人机ID
-        final long reservationTime;     // 预订时间
+        final String droneId;           // ID of the drone holding the reservation
+        final long reservationTime;     // time the reservation was made
         
         GridReservation(String droneId, long reservationTime) {
             this.droneId = droneId;

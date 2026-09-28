@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# 清除可能存在的旧环境变量
+# Clear any stale environment variables
 unset PYTHONPATH
 unset LD_LIBRARY_PATH
 
-# 设置Python路径
+# Set the Python path
 export PYTHONPATH=/opt/ros/$ROS_DISTRO/lib/python3.10/site-packages:$PYTHONPATH
 export PYTHONPATH=/opt/ros/$ROS_DISTRO/local/lib/python3.10/dist-packages:$PYTHONPATH
 export PYTHONPATH=/home/crazy/crazyflie_mapping_demo/ros2_ws/install/crazyflie_interfaces/local/lib/python3.10/dist-packages:$PYTHONPATH
@@ -12,26 +12,26 @@ export PYTHONPATH=/home/crazy/crazyflie_mapping_demo/ros2_ws/install/crazyflie_p
 export PYTHONPATH=/home/crazy/crazyflie_mapping_demo/ros2_ws/install/crazyflie_examples/local/lib/python3.10/dist-packages:$PYTHONPATH
 export PYTHONPATH=/home/crazy/crazyflie_mapping_demo/ros2_ws/install/crazyflie_sim/local/lib/python3.10/dist-packages:$PYTHONPATH
 
-# 设置库路径
+# Set the library path
 export LD_LIBRARY_PATH=/opt/ros/$(ROS_DISTRO)/lib:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH=/opt/ros/$(ROS_DISTRO)/local/lib:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH=/home/crazy/crazyflie_mapping_demo/ros2_ws/install/crazyflie_interfaces/lib:$LD_LIBRARY_PATH
 
 CRAZYFLIE_CPS_PATH=$(pwd)/../../..
 
-# 确保ROS2环境变量已设置
+# Make sure the ROS2 environment variables are set
 source /opt/ros/$(ROS_DISTRO)/setup.bash
 source /home/crazy/crazyflie_mapping_demo/ros2_ws/install/setup.bash
 
-# 进入项目目录
+# Change into the project directory
 cd "$(dirname "$0")/.."
 
-# 激活Python虚拟环境（如果存在）
+# Activate the Python virtual environment, if present
 if [ -d "venv" ]; then
     source venv/bin/activate
 fi
 
-# 清理旧的图片文件
+# Remove the old image files
 echo "Cleaning up old image files..."
 rm -rf $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf231/*.png
 rm -rf $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf232/*.png
@@ -50,7 +50,7 @@ mkdir -p $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf236
 mkdir -p $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf237
 mkdir -p $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf238
 
-# 初始化latest.txt文件
+# Initialise the latest.txt files
 echo "1" > $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf231/latest.txt
 echo "1" > $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf232/latest.txt
 echo "1" > $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf233/latest.txt
@@ -60,8 +60,8 @@ echo "1" > $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf236/latest.
 echo "1" > $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf237/latest.txt
 echo "1" > $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview/img/cf238/latest.txt
 
-# ------转发端口配置------
-# 检查并关闭占用端口的进程
+# ------ Port-forwarding configuration ------
+# Find and kill any process occupying the ports
 echo "Checking ports..."
 for port in 8080 8081 8082 8083 8084 8085 8086 8087 5000 5001 5002 5003 5004 5005 5006 5007; do
     if lsof -i :$port > /dev/null; then
@@ -71,42 +71,42 @@ for port in 8080 8081 8082 8083 8084 8085 8086 8087 5000 5001 5002 5003 5004 500
     fi
 done
 
-# 启动HTTP服务器（重定向输出到http_server.log）
+# Start the HTTP server (output redirected to http_server.log)
 cd $CRAZYFLIE_CPS_PATH/controller/cf.PyControl/webview
 python3 -m http.server 8080 > http_server.log 2>&1 &
 HTTP_SERVER_PID=$!
 
-# 启动第二个HTTP服务器用于第二个无人机
+# Start the HTTP server for the second drone
 python3 -m http.server 8081 > http_server_2.log 2>&1 &
 HTTP_SERVER_PID_2=$!
 
-# 启动第三个HTTP服务器用于第三个无人机
+# Start the HTTP server for the third drone
 python3 -m http.server 8082 > http_server_3.log 2>&1 &
 HTTP_SERVER_PID_3=$!
 
-# 启动第四个HTTP服务器用于第四个无人机
+# Start the HTTP server for the fourth drone
 python3 -m http.server 8083 > http_server_4.log 2>&1 &
 HTTP_SERVER_PID_4=$!
 
-# 启动第五个HTTP服务器用于第五个无人机
+# Start the HTTP server for the fifth drone
 python3 -m http.server 8084 > http_server_5.log 2>&1 &
 HTTP_SERVER_PID_5=$!
 
-# 启动第六个HTTP服务器用于第六个无人机
+# Start the HTTP server for the sixth drone
 python3 -m http.server 8085 > http_server_6.log 2>&1 &
 HTTP_SERVER_PID_6=$!
 
-# 启动第七个HTTP服务器用于第七个无人机
+# Start the HTTP server for the seventh drone
 python3 -m http.server 8086 > http_server_7.log 2>&1 &
 HTTP_SERVER_PID_7=$!
 
-# 启动第八个HTTP服务器用于第八个无人机
+# Start the HTTP server for the eighth drone
 python3 -m http.server 8087 > http_server_8.log 2>&1 &
 HTTP_SERVER_PID_8=$!    
 
 
 
-# 设置清理函数
+# Define the cleanup function
 cleanup() {
     echo "Shutting down servers..."
     kill $HTTP_SERVER_PID 2>/dev/null
@@ -117,17 +117,17 @@ cleanup() {
     kill $HTTP_SERVER_PID_6 2>/dev/null
     kill $HTTP_SERVER_PID_7 2>/dev/null
     kill $HTTP_SERVER_PID_8 2>/dev/null
-    # 确保所有Python进程都被清理
+    # Make sure every Python process is cleaned up
     pkill -f "cf-ctrl-service-ros2.py"
     exit 0
 }
 
-# 设置信号处理
+# Install the signal handlers
 trap cleanup SIGINT SIGTERM
 # ------------------------------------------------------------------------------------------------
 
 cd ../src/
-# 启动ROS2版本的控制服务
+# Start the ROS2 version of the control service
 python3 cf-ctrl-service-ros2.py --drone_id cf231 --port 5000 --debug &
 CONTROLLER_PID_1=$!
 
@@ -152,8 +152,8 @@ CONTROLLER_PID_7=$!
 python3 cf-ctrl-service-ros2.py --drone_id cf238 --port 5007 --debug &
 CONTROLLER_PID_8=$!
 
-# 等待所有进程
+# Wait for all processes
 wait $CONTROLLER_PID_1 $CONTROLLER_PID_2 $CONTROLLER_PID_3 $CONTROLLER_PID_4 $CONTROLLER_PID_5 $CONTROLLER_PID_6 $CONTROLLER_PID_7 $CONTROLLER_PID_8
 
-# 启动无人机日志记录器
+# Start the drone logger
 # python3 drone_logger.py &

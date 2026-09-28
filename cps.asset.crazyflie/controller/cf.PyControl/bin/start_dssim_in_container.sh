@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# 这个脚本设计为“在 ds-crazyflies 容器内运行”：
-# - 使用 ds-crazyflies 的 ROS2 overlay（包含 crazyflie_interfaces/msg 的 Takeoff/Land/GoTo）
-# - 使用挂载进来的 /workspace/controller 代码
+# This script is meant to be run INSIDE the ds-crazyflies container:
+# - it uses the ds-crazyflies ROS2 overlay, which provides crazyflie_interfaces/msg Takeoff/Land/GoTo
+# - it uses the controller code mounted at /workspace/controller
 
-# ROS2 的 setup.bash 里可能会读取未定义环境变量；因此 source 时临时关闭 nounset(-u)
+# The ROS2 setup.bash may read undefined environment variables, so nounset (-u) is disabled while sourcing it
 set +u
 source /opt/ros/$ROS_DISTRO/setup.bash
 source /ds/ds-crazyflies/install/setup.bash
@@ -15,21 +15,21 @@ ROOT="/ds/controller/cf.PyControl"
 
 cd "$ROOT"
 
-# 清理旧进程（容器内残留）。注意：network_mode: host 下如果端口被“宿主机其它进程”占用，这里杀不到；
-# 这种情况由宿主机脚本 start_dssim_docker.sh 负责先清理。
+# Clean up stale processes left inside the container. Note: with network_mode: host, a port held by
+# another process on the host cannot be freed here; start_dssim_docker.sh handles that case on the host.
 echo "Cleaning up old controller/http processes in container..."
 pkill -f "cf-ctrl-service-ros2.py" 2>/dev/null || true
 pkill -f "python3 -m http.server 8080" 2>/dev/null || true
 pkill -f "python3 -m http.server 8081" 2>/dev/null || true
 
-# 可选：使用 venv（若你愿意把 venv 放在 repo 内）
+# Optional: use a venv (if you keep one inside the repository)
 if [ -d "venv" ]; then
   source venv/bin/activate
 else
   python3 -m pip install --user -r "$ROOT/requirements_dssim.txt" --break-system-packages
 fi
 
-# 准备 webview 目录（沿用你现有逻辑，但路径换成容器内挂载路径）
+# Prepare the webview directories (same logic as before, but using the in-container mount paths)
 echo "Preparing webview folders..."
 for id in cf231 cf232 cf233 cf234 cf235 cf236 cf237 cf238; do
   mkdir -p "$ROOT/webview/img/$id"
@@ -37,7 +37,7 @@ for id in cf231 cf232 cf233 cf234 cf235 cf236 cf237 cf238; do
   echo "1" > "$ROOT/webview/img/$id/latest.txt"
 done
 
-# 启动 HTTP server（用于 webview）
+# Start the HTTP server used by the webview
 cd "$ROOT/webview"
 python3 -m http.server 8080 > http_server.log 2>&1 &
 HTTP1=$!
@@ -52,7 +52,7 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
-# 启动控制服务（dssim：topic 模式）
+# Start the control service (dssim: topic mode)
 cd "$ROOT/src"
 python3 cf-ctrl-service-ros2.py --dssim --drone_id cf231 --port 5000 --debug &
 P1=$!

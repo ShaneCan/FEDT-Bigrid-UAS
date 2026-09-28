@@ -30,7 +30,7 @@ BOX_LIMIT = 0.4
 def activate_mellinger_controller(cf):
     cf.param.set_value('stabilizer.controller', '2')
 
-class CFOperationStrategy(ABC): # 是一个抽象类，需要被继承，被下方的HlCommanderCFOperationImpl继承
+class CFOperationStrategy(ABC): # Abstract class, implemented below by HlCommanderCFOperationImpl
     _IS_DEBUG = False
 
     def __init__(self, scf=None, debug: bool = False):
@@ -67,33 +67,34 @@ class CFOperationStrategy(ABC): # 是一个抽象类，需要被继承，被下�
         pass
 
 
-class HlCommanderCFOperationImpl(CFOperationStrategy): # 继承了CFOperationStrategy，实现了CFOperationStrategy的抽象方法
-    """这是策略模式的实现，在状态机中使用，封装了ROS2CrazyflieController的功能，
-    提供了统一的接口，可以方便地切换scf和ROS2控制器，其实例是cf_sm.StateMachineDrone的uavOpStrategyImpl"""
+class HlCommanderCFOperationImpl(CFOperationStrategy): # Extends CFOperationStrategy and implements its abstract methods
+    """Strategy-pattern implementation used by the state machine. It wraps ROS2CrazyflieController
+    behind a uniform interface so the scf and ROS2 controllers can be swapped easily. The instance is
+    cf_sm.StateMachineDrone.uavOpStrategyImpl."""
 
-    def __init__(self, scf=None, controller=None, debug: bool = False):   # 需要传入scf或controller
-     # 创建HlCommanderCFOperationImpl实例的时候传入scf表示使用SyncCrazyflie官方库通过USB与Crazyflie无人机通信，传入controller是使用ROS2控制器  
+    def __init__(self, scf=None, controller=None, debug: bool = False):   # either scf or controller must be supplied
+     # Passing scf uses the official SyncCrazyflie library over USB; passing controller uses the ROS2 controller  
         super().__init__(scf=scf, debug=debug)
         self.controller = controller
 
     def isSetSCF(self):
-        """检查是否已设置Crazyflie控制器"""
+        """Checks whether a Crazyflie controller has been set."""
         return self.controller is not None or self._scf is not None
         #return self.controller is not None or self.scf is not None
 
 
     def activate_idle_simple(self):
-        """激活空闲状态"""
+        """Activates the idle state."""
         print(f"HlCommanderCFOperationImpl: activate_idle_simple")
         return True
 
     def take_off_simple(self):
         try:
             if self.controller:
-                # ROS2控制方式
+                # ROS2 control path
                 self.controller.take_off()
             elif self._scf:
-                # 直接控制方式
+                # Direct control path
                 self.mc = PositionHlCommander(self._scf, 
                                       default_height=DEFAULT_HEIGHT, 
                                       default_velocity=DEFAULT_VELOCITY)
@@ -106,10 +107,10 @@ class HlCommanderCFOperationImpl(CFOperationStrategy): # 继承了CFOperationStr
     def landing_simple(self):
         try:
             if self.controller:
-                # ROS2控制方式
+                # ROS2 control path
                 self.controller.land()
             elif self._scf:
-                # 直接控制方式
+                # Direct control path
                 self.mc.land()
             return True
         except Exception as e:
@@ -119,10 +120,10 @@ class HlCommanderCFOperationImpl(CFOperationStrategy): # 继承了CFOperationStr
     def navigate_to_simple(self, targetPoint):
         try:
             if self.controller:
-                # ROS2控制方式
+                # ROS2 control path
                 self.controller.go_to(targetPoint.x, targetPoint.y, targetPoint.z)
             elif self._scf:
-                # 直接控制方式
+                # Direct control path
                 self.mc.go_to(targetPoint.x, targetPoint.y, targetPoint.z)
             return True
         except Exception as e:
@@ -130,19 +131,19 @@ class HlCommanderCFOperationImpl(CFOperationStrategy): # 继承了CFOperationStr
             return False
 
     def hover_at_position_realtime(self, x=None, y=None, z=None, yaw=0.0, emergency_stop=True):
-        """立即停止在当前位置并悬停 - 立即生效，可中断当前轨迹"""
+        """Stops at the current position and hovers, immediately, interrupting the current trajectory."""
         try:
             print(f"hover_at_position_realtime called: controller={self.controller is not None}, scf={self._scf is not None}, emergency_stop={emergency_stop}")
             
             if self.controller:
-                # ROS2控制方式 - 停止在当前位置
+                # ROS2 control path - stop at the current position
                 print("Using ROS2 controller for hover")
                 return self.controller.hover_at_position(x, y, z, yaw, emergency_stop)
             elif self._scf:
-                # 直接控制方式 - 停止在当前位置
+                # Direct control path - stop at the current position
                 print(f"Using SCF controller for hover, mc={self.mc is not None}")
                 if not self.mc:
-                    # 如果 mc 未初始化，先初始化
+                    # Initialise mc if it has not been initialised yet
                     print("Initializing PositionHlCommander...")
                     self.mc = PositionHlCommander(self._scf, 
                                           default_height=DEFAULT_HEIGHT, 
@@ -150,11 +151,11 @@ class HlCommanderCFOperationImpl(CFOperationStrategy): # 继承了CFOperationStr
                     print("PositionHlCommander initialized successfully")
                 
                 print("Calling mc.stop()...")
-                self.mc.stop()  # 停止当前运动，保持在当前位置
+                self.mc.stop()  # stop the current motion and stay at the current position
                 if emergency_stop:
-                    time.sleep(0.1)  # 紧急模式，减少等待时间
+                    time.sleep(0.1)  # emergency mode: shorter wait
                 else:
-                    time.sleep(0.2)  # 正常模式
+                    time.sleep(0.2)  # normal mode
                 print("mc.stop() completed successfully")
                 return True
             else:
@@ -177,15 +178,15 @@ class HlCommanderCFOperationImpl(CFOperationStrategy): # 继承了CFOperationStr
         return False
 
     def move_to_position_realtime(self, x, y, z, velocity=0.1, timeout=10.0, skip_stop=False):
-        """实时移动到指定位置 - 使用速度控制，可中断"""
+        """Moves to the given position in real time, using velocity control; interruptible."""
         try:
             if self.controller:
-                # ROS2控制方式 - 使用实时控制接口
+                # ROS2 control path - use the real-time control interface
                 return self.controller.move_to_position_realtime(x, y, z, velocity, timeout, skip_stop=skip_stop)
             elif self._scf:
-                # 直接控制方式
+                # Direct control path
                 if not self.mc:
-                    # 如果 mc 未初始化，先初始化
+                    # Initialise mc if it has not been initialised yet
                     self.mc = PositionHlCommander(self._scf, 
                                           default_height=DEFAULT_HEIGHT, 
                                           default_velocity=DEFAULT_VELOCITY)
@@ -193,8 +194,8 @@ class HlCommanderCFOperationImpl(CFOperationStrategy): # 继承了CFOperationStr
                 if not skip_stop:
                     self.mc.stop()  # Bug:
                     #AttributeError: 'PositionHlCommander' object has no attribute 'stop'
-                    #PositionHlCommander中没有stop，MotionCommand有但是直接调用会提示没有起飞，需要从起飞开始就要用MotionCommand，没必要
-                    time.sleep(0.2)  # 等待停止生效
+                    # PositionHlCommander has no stop; MotionCommander does, but calling it directly reports that the drone has not taken off - it would have to be used from take-off onwards, which is not worth it
+                    time.sleep(0.2)  # wait for the stop to take effect
                 self.mc.go_to(x, y, z, velocity=velocity)
                 return True
             return False
@@ -203,7 +204,7 @@ class HlCommanderCFOperationImpl(CFOperationStrategy): # 继承了CFOperationStr
             return False
 
     def shutdown(self):
-        """关闭无人机"""
+        """Shuts the drone down."""
         print(f"HlCommanderCFOperationImpl: shutdown")
         try:
             self.controller.stop()

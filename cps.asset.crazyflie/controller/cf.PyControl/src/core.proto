@@ -17,17 +17,17 @@ enum Type {
 
 
 message Size {
-  Unit unit = 1;      // 单位
-  float width = 2;    // 宽度
-  float length = 3;   // 长度
-  float height = 4;   // 高度
+  Unit unit = 1;      // unit
+  float width = 2;    // width
+  float length = 3;   // length
+  float height = 4;   // height
 }
 
 
 message Pose {
-  Type type = 1;      // 坐标类型
-  float x = 2;        // X坐标
-  float y = 3;        // Y坐标
-  float z = 4;        // Z坐标
-  float w = 5;        // 四元数W分量
+  Type type = 1;      // coordinate type
+  float x = 2;        // X coordinate
+  float y = 3;        // Y coordinate
+  float z = 4;        // Z coordinate
+  float w = 5;        // quaternion W component
 }

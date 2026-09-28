@@ -7,23 +7,23 @@ from cf_positioning import Point3D
 from wall_following import WallFollowingConfig
 from werkzeug.routing import FloatConverter, BaseConverter
 
-# 设置日志记录器
+# Configure the logger
 logger = logging.getLogger(__name__)
 
-# 定义支持负数的浮点数转换器
+# Float converter that also accepts negative values
 class SignedFloatConverter(FloatConverter):
-    regex = r'-?\d+(\.\d+)?'  # 匹配带符号的浮点数
+    regex = r'-?\d+(\.\d+)?'  # matches a signed floating-point number
 
 # Define a blueprint
-drone_blueprint = Blueprint('drone', __name__) #使用Blueprint而不是app可以方便将同一类如无人机类的路由组织在一起
-# 注册自定义转换器
+drone_blueprint = Blueprint('drone', __name__) # Using a Blueprint rather than app keeps all drone-related routes together
+# Register the custom converter
 drone_blueprint.record(lambda state: state.app.url_map.converters.update(
     signed_float=SignedFloatConverter
 ))
 
 DEBUG = False
 
-# 定义通用异常处理装饰器
+# Generic exception-handling decorator
 def handle_exceptions(func):
     def wrapper(*args, **kwargs):
         try:
@@ -47,22 +47,22 @@ def routes():
         urls.append(f"http://{request.host}{rule}")
     return jsonify({"routes": urls})
 
-# 获取无人机实例
+# Get the drone instance
 def get_drone():
     return current_app.config['DRONE']
 
 @drone_blueprint.route('/install', methods=['POST'])
 @handle_exceptions
 def install():
-    """安装无人机"""
+    """Installs the drone."""
     drone = get_drone()
-    drone.install() #这些黑的无法点的方法 如.install, 都是状态机的event，在cf_sm.py中定义
+    drone.install() # Methods such as .install are state-machine events defined in cf_sm.py
     return jsonify({"message": "Installed", "state": drone.get_current_state()})
 
 @drone_blueprint.route('/start', methods=['POST'])
 @handle_exceptions
 def start():
-    """启动无人机"""
+    """Starts the drone."""
     drone = get_drone()
     drone.start()
     return jsonify({"message": "Started", "state": drone.get_current_state()})
@@ -70,7 +70,7 @@ def start():
 @drone_blueprint.route('/initialize', methods=['POST'])
 @handle_exceptions
 def initialize():
-    """初始化无人机"""
+    """Initialises the drone."""
     drone = get_drone()
     drone.initialize()
     return jsonify({"message": "Initialized", "state": drone.get_current_state()})
@@ -78,7 +78,7 @@ def initialize():
 @drone_blueprint.route('/stop', methods=['POST'])
 @handle_exceptions
 def stop():
-    """停止无人机"""
+    """Stops the drone."""
     drone = get_drone()
     drone.stop()
     return jsonify({"message": "Stopped", "state": drone.get_current_state()})
@@ -86,9 +86,9 @@ def stop():
 @drone_blueprint.route('/stop_controller', methods=['POST'])
 @handle_exceptions
 def stop_controller():
-    """停止控制器setpoint（不触发状态机转换）"""
+    """Stops the controller setpoints without triggering a state-machine transition."""
     drone = get_drone()
-    # 只调用控制器的stop方法，不触发状态机转换
+    # Only call the controller's stop method; do not trigger a state transition
     if drone.uavOpStrategyImpl and hasattr(drone.uavOpStrategyImpl, 'controller') and drone.uavOpStrategyImpl.controller is not None:
         success = drone.uavOpStrategyImpl.controller.stop()
         if success:
@@ -107,7 +107,7 @@ def uninstall():
 @drone_blueprint.route('/activate_idle', methods=['POST'])
 @handle_exceptions
 def activate_idle():
-    """激活空闲状态"""
+    """Activates the idle state."""
     drone = get_drone()
     logger.info("Activate idle request processing")
     drone.activate_idle()
@@ -117,7 +117,7 @@ def activate_idle():
 @drone_blueprint.route('/begin_takeoff', methods=['POST'])
 @handle_exceptions
 def begin_takeoff():
-    """开始起飞"""
+    """Begins take-off."""
     drone = get_drone()
     logger.info("Begin takeoff request processing")
     drone.begin_takeoff()
@@ -127,7 +127,7 @@ def begin_takeoff():
 @drone_blueprint.route('/begin_landing', methods=['POST'])
 @handle_exceptions
 def begin_landing():
-    """开始降落"""
+    """Begins landing."""
     drone = get_drone()
     logger.info("Begin landing request processing")
     drone.begin_landing()
@@ -137,7 +137,7 @@ def begin_landing():
 @drone_blueprint.route('/navigate', methods=['POST'])
 @handle_exceptions
 def navigate_json():
-    """通过JSON请求体导航到指定位置"""
+    """Navigates to the position given in the JSON request body."""
     drone = get_drone()
     data = request.json
     
@@ -167,7 +167,7 @@ def append_navigation_goal(x, y, z):
 @drone_blueprint.route('/navigate/append', methods=['POST'])
 @handle_exceptions
 def append_navigation_goal_json():
-    """通过JSON请求体添加导航点"""
+    """Adds a waypoint from the JSON request body."""
     drone = get_drone()
     data = request.json
     
@@ -183,29 +183,29 @@ def append_navigation_goal_json():
         "state": drone.get_current_state()
     })
 
-# 新增：实时位置控制接口 - 立即生效，可中断当前轨迹
+# Real-time position control endpoint: takes effect immediately and can interrupt the current trajectory
 @drone_blueprint.route('/hover/realtime', methods=['POST'])
 @handle_exceptions
 def hover_realtime():
-    """立即停止在当前位置并悬停 - 立即生效，可中断当前轨迹"""
+    """Stops at the current position and hovers, immediately, interrupting the current trajectory."""
     drone = get_drone()
     data = request.json or {}
     
-    # 坐标是可选的，如果不提供则停止在当前位置
+    # The coordinates are optional; without them the drone stops at its current position
     x = data.get('x')
     y = data.get('y')
     z = data.get('z')
     yaw = data.get('yaw', 0.0)
-    emergency_stop = data.get('emergency_stop', True)  # 默认启用紧急停止
+    emergency_stop = data.get('emergency_stop', True)  # emergency stop is enabled by default
 
     try:
-        # 1. 如果当前在flying状态且非紧急模式，先强制回到hovering状态
+        # 1. If flying and this is not an emergency, force a return to hovering first
         if drone.current_state == drone.flying and not emergency_stop:
             drone.abort_to_hover()
-            # 等待状态转换完成
+            # Wait for the transition to complete
             time.sleep(0.5)
         
-        # 2. 调用实时悬停方法  drone.uavOpStrategyImpl代表支持两种control方式，下一步转入cf_drone_ops.py中的方法
+        # 2. Call the real-time hover method. drone.uavOpStrategyImpl abstracts the two control paths; execution continues in cf_drone_ops.py
         success = drone.uavOpStrategyImpl.hover_at_position_realtime(x, y, z, yaw, emergency_stop)
         if success:
             if x is not None and y is not None and z is not None:
@@ -222,11 +222,11 @@ def hover_realtime():
         logger.error(f"Real-time hover failed: {e}")
         return jsonify({"error": f"Real-time hover failed: {e}"}), 500
 
-# 新增：实时移动控制接口 - 使用速度控制，可中断
+# Real-time movement endpoint: velocity controlled and interruptible
 @drone_blueprint.route('/move/realtime', methods=['POST'])
 @handle_exceptions
 def move_realtime():
-    """实时移动到指定位置 - 使用速度控制，可中断"""
+    """Moves to the given position in real time, using velocity control; interruptible."""
     drone = get_drone()
     data = request.json
     if not data or not all(k in data for k in ['x', 'y', 'z']):
@@ -235,26 +235,26 @@ def move_realtime():
     x, y, z = data['x'], data['y'], data['z']
     velocity = data.get('velocity', 0.3)
     timeout = data.get('timeout', 10.0)
-    skip_stop = data.get('skip_stop', False)  # 新增参数
+    skip_stop = data.get('skip_stop', False)  # additional parameter
 
     try:
-        # 1. 如果当前在flying状态，先强制回到hovering状态
+        # 1. If flying, force a return to hovering first
         if drone.current_state == drone.flying:
             drone.abort_to_hover()
-            # 等待状态转换完成
+            # Wait for the transition to complete
             time.sleep(0.5)
         
-        # 2. 调用实时移动方法
+        # 2. Call the real-time movement method
         success = drone.uavOpStrategyImpl.move_to_position_realtime(x, y, z, velocity, timeout, skip_stop)
         if success:
-            # 3. 实时移动完成后，进入flying状态
-            # 注意：实时移动是立即执行的，完成后无人机应该处于flying状态
+            # 3. Once the real-time move completes, enter the flying state
+            # Note: a real-time move executes immediately, so the drone should be flying afterwards
             try:
-                # 如果实时移动成功，说明无人机正在移动，应该进入flying状态
+                # A successful real-time move means the drone is moving, so it should enter the flying state
                 if drone.current_state == drone.hovering:
-                    # 手动触发状态转换到flying
+                    # Trigger the transition to flying manually
                     drone.begin_nav_goal_sequence()
-                    # 等待状态转换
+                    # Wait for the transition
                     time.sleep(0.2)
                     logger.info(f"Drone {drone._uav_name} entered flying state after real-time move")
             except Exception as state_error:
@@ -285,7 +285,7 @@ def begin_stopping():
 @drone_blueprint.route('/state', methods=['GET'])
 @handle_exceptions
 def get_state():
-    """获取无人机状态"""
+    """Returns the drone status."""
     drone = get_drone()
     return jsonify({
         "state": drone.get_current_state(),
@@ -336,13 +336,13 @@ def stop_wall_follow():
 @drone_blueprint.route('/navigate/<signed_float:x>/<signed_float:y>/<signed_float:z>', methods=['POST'])
 @handle_exceptions
 def navigate_direct(x, y, z):
-    """直接导航到指定位置，该路由更适合手动测试，因为命令更简单直观"""
+    """Navigates directly to the given position. This route is convenient for manual testing because the command is simpler."""
     drone = get_drone()
     point = Point3D(x, y, z)
-    drone.targetPointsQueue.append(point) # /navigate/<float:x>/<float:y>/<float:z> 会把点直接加入到导航序列中
+    drone.targetPointsQueue.append(point) # /navigate/<float:x>/<float:y>/<float:z> appends the point to the navigation sequence
     
     if drone.current_state == drone.hovering:
-        drone.begin_nav_goal_sequence() # begin_nav_goal_sequence 是一个状态机event，在cf_sm.py中定义
+        drone.begin_nav_goal_sequence() # begin_nav_goal_sequence is a state-machine event defined in cf_sm.py
     
     return jsonify({
         "message": "Navigation point added",

@@ -7,53 +7,53 @@ from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 
 def convert_to_full_uri(address):
-    """将简短地址转换为完整的URI格式"""
+    """Converts a short address into a full URI."""
     if address.startswith('radio://'):
-        # 如果已经是完整URI，直接返回
+        # Already a full URI: return it unchanged
         return address
     else:
-        # 假设简短地址是E1、E2等格式，转换为完整URI
-        # 移除可能的'E'前缀，只取数字部分
+        # Short addresses such as E1 or E2 are expanded into a full URI
+        # Strip a leading 'E' and keep only the digits
         if address.startswith('E'):
             address = address[1:]
         return f'radio://0/80/2M/E7E7E7E7E{address}'
 
 def parse_arguments():
-    """解析命令行参数"""
-    parser = argparse.ArgumentParser(description='设置Crazyflie的初始位置')
+    """Parses the command-line arguments."""
+    parser = argparse.ArgumentParser(description='Set the initial position of a Crazyflie')
     parser.add_argument('--uri', type=str, default='E1',
-                       help='Crazyflie的地址 (默认: E1, 支持E1、E2等简短格式或完整URI)')
+                       help='Crazyflie address (default: E1; accepts short forms such as E1 or E2, or a full URI)')
     parser.add_argument('--x', type=float, default=0.0,
-                       help='初始X坐标 (默认: 0.0)')
+                       help='Initial X coordinate (default: 0.0)')
     parser.add_argument('--y', type=float, default=0.8,
-                       help='初始Y坐标 (默认: 0.8)')
+                       help='Initial Y coordinate (default: 0.8)')
     parser.add_argument('--z', type=float, default=0.0,
-                       help='初始Z坐标 (默认: 0.0)')
+                       help='Initial Z coordinate (default: 0.0)')
     return parser.parse_args()
 
 def set_initial_position(scf, initial_x, initial_y, initial_z):
     cf = scf.cf
-    # 确保成功连接后设置参数
+    # Only set the parameters once the connection has been established
     cf.param.set_value('kalman.initialX', str(initial_x))
     cf.param.set_value('kalman.initialY', str(initial_y))
     cf.param.set_value('kalman.initialZ', str(initial_z))
-    # 重置估计器，使位置估计以新值为初始
+    # Reset the estimator so the position estimate starts from the new values
     cf.param.set_value('kalman.resetEstimation', '1')
 
-    # 等待一点时间，让固件生效
+    # Give the firmware a moment to apply them
     time.sleep(0.1)
     print(f"Set initial position to X={initial_x}, Y={initial_y}, Z={initial_z} and reset estimation.")
 
 if __name__ == '__main__':
-    # 解析命令行参数
+    # Parse the command-line arguments
     args = parse_arguments()
     
-    # 转换URI格式
+    # Convert the address to a URI
     full_uri = convert_to_full_uri(args.uri)
     
     logging.basicConfig(level=logging.INFO)
 
-    # 初始化底层通信
+    # Initialise the low-level drivers
     cflib.crtp.init_drivers()
 
     with SyncCrazyflie(full_uri, cf=Crazyflie(rw_cache='./cache')) as scf:

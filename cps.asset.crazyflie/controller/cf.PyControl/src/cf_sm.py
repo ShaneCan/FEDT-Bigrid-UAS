@@ -28,29 +28,29 @@ loggingPeriod_in_ms = 100 #ms
 
 class StateMachineDrone(StateMachine):
 
-    uavOpStrategyImpl = None     # 策略实例 通过cf-ctrl-service主函数中设置，可选ros2或scf控制器
-    _image_numbers = {}  # 使用字典存储每个无人机的图片编号
-    _last_state = None  # 添加变量来跟踪上一次的状态
+    uavOpStrategyImpl = None     # Strategy instance, set in the cf-ctrl-service main function; either the ros2 or the scf controller
+    _image_numbers = {}  # Per-drone image counter, stored in a dict
+    _last_state = None  # Tracks the previous state
 
     goalReached = False
     isFlying = False
-    targetPointsQueue = [] #通过REST API接口来添加目标点的 API接口在routes.py
+    targetPointsQueue = [] # Target points added through the REST API; the endpoints live in routes.py
     _IS_DEBUG = False
-    _graph_lock = threading.Lock()  # 添加锁机制
-    _last_graph_update = 0  # 记录上次更新时间
-    _graph_update_interval = 0.1  # 更新间隔（秒）
+    _graph_lock = threading.Lock()  # Lock
+    _last_graph_update = 0  # Timestamp of the last update
+    _graph_update_interval = 0.1  # Update interval in seconds
 
     def __init__(self, drone_id: str, debug: bool = False): 
-        # 先设置所有必要的属性
+        # Set every required attribute first
         self._IS_DEBUG = debug
-        self._uav_name = drone_id  # 直接使用传入的drone_id
+        self._uav_name = drone_id  # use the drone_id that was passed in
         if not self._uav_name:
             raise ValueError("drone_id must be set and cannot be None or empty")
         self.wall_following_config: Optional[WallFollowingConfig] = None
         
-        # 为每个无人机初始化图片编号
+        # Initialise the image counter for each drone
         if self._uav_name not in self._image_numbers:
-            # 检查latest.txt文件是否存在
+            # Check whether latest.txt exists
             img_dir = f"/home/crazy/cps.asset.crazyflie/controller/cf.PyControl/webview/img/{self._uav_name}"
             latest_file = f"{img_dir}/latest.txt"
             if os.path.exists(latest_file):
@@ -64,7 +64,7 @@ class StateMachineDrone(StateMachine):
             else:
                 self._image_numbers[self._uav_name] = 1
             
-        # 确保图片目录和latest.txt文件存在
+        # Make sure the image directory and latest.txt exist
         img_dir = f"/home/crazy/cps.asset.crazyflie/controller/cf.PyControl/webview/img/{self._uav_name}"
         os.makedirs(img_dir, exist_ok=True)
         latest_file = f"{img_dir}/latest.txt"
@@ -74,7 +74,7 @@ class StateMachineDrone(StateMachine):
             
         self.current_transition = None
         
-        # 最后调用父类的初始化
+        # Finally, call the superclass initialiser
         super().__init__()
 
     @property
@@ -86,7 +86,7 @@ class StateMachineDrone(StateMachine):
             raise ValueError("drone_id must be set and cannot be None or empty")
         self._uav_name = drone_id
 
-    def set_uavOpsImpl(self, uavOpsImpl):# 通过cf-ctrl-service的main函数中的StateMachineDrone.set_uavOpsImpl设置uavOpsImpl
+    def set_uavOpsImpl(self, uavOpsImpl):# uavOpsImpl is set via StateMachineDrone.set_uavOpsImpl in the cf-ctrl-service main function
         print(f"\nSetting uavOpStrategyImpl...")
         print(f"Current uavOpStrategyImpl: {self.uavOpStrategyImpl}")
         print(f"New uavOpsImpl: {uavOpsImpl}")
@@ -124,13 +124,13 @@ class StateMachineDrone(StateMachine):
     uninstall = resolved.to(uninstalled)
 
     # Define the transitions for UAV operation
-    activate_idle = active.to(idle) #activate_idle是event，active和idle是state
+    activate_idle = active.to(idle) # activate_idle is an event; active and idle are states
     begin_takeoff = idle.to(hovering) #cond="reached_Height"
     begin_landing = hovering.to(landed)
     begin_nav_goal_sequence = hovering.to(flying)
     next_nav_goal = flying.to(flying, cond='goal_reached')
     keep_hovering = flying.to(hovering, cond='goal_reached')
-    abort_to_hover = flying.to(hovering)  # 新增：强制从飞行回到悬停（无条件）
+    abort_to_hover = flying.to(hovering)  # Forces a return from flying to hovering, unconditionally
     begin_wall_following = hovering.to(mapping)
     stop_wall_following = mapping.to(hovering)
 
@@ -143,7 +143,7 @@ class StateMachineDrone(StateMachine):
         # Implement logic to check if dependencies are resolved
         return True
     def goal_reached(self):
-        """检查是否到达目标位置"""
+        """Checks whether the target position has been reached."""
         print("\n" + "="*50)
         print("GOAL REACHED CHECK")
         print("="*50)
@@ -151,14 +151,14 @@ class StateMachineDrone(StateMachine):
         print(f"Current transition: {self.current_transition}")
         print(f"uavOpStrategyImpl exists: {self.uavOpStrategyImpl is not None}")
         
-        # 首先检查uavOpStrategyImpl是否存在
+        # First check that uavOpStrategyImpl exists
         if not self.uavOpStrategyImpl:
             print("ERROR: No uavOpStrategyImpl found!")
             print("This should not happen as it should be set during initialization")
             self.goalReached = True
             return True
             
-        # 检查是使用scf还是controller
+        # Check whether scf or controller is in use
         has_scf = hasattr(self.uavOpStrategyImpl, 'scf') and self.uavOpStrategyImpl.scf is not None
         has_controller = hasattr(self.uavOpStrategyImpl, 'controller') and self.uavOpStrategyImpl.controller is not None
         
@@ -171,14 +171,14 @@ class StateMachineDrone(StateMachine):
             return True
             
         if has_controller:
-            # 获取当前位置
+            # Get the current position
             current_pos = self.uavOpStrategyImpl.controller.current_position
             if not current_pos:
                 print("No current position available, returning True")
                 self.goalReached = True
                 return True
             
-            # 获取目标位置
+            # Get the target position
             if len(self.targetPointsQueue) > 0:
                 target = self.targetPointsQueue[0]
                 print(f"Target point: ({target.x}, {target.y}, {target.z})")
@@ -187,13 +187,13 @@ class StateMachineDrone(StateMachine):
                 self.goalReached = True
                 return True
             
-            # 计算距离
+            # Compute the distance
             distance = ((current_pos.x - target.x) ** 2 + 
                         (current_pos.y - target.y) ** 2 + 
                         (current_pos.z - target.z) ** 2) ** 0.5
                     
-            # 如果距离小于阈值，认为到达目标
-            threshold = 1  # 单位 m (原来为1m)
+            # The target counts as reached once the distance is below the threshold
+            threshold = 1  # in metres (previously 1 m)
             self.goalReached = distance < threshold
             print(f"Distance to target: {distance:.2f}m, threshold: {threshold}m")
             print(f"Goal reached: {self.goalReached}")
@@ -214,7 +214,7 @@ class StateMachineDrone(StateMachine):
 
 
     # Before/after_transition is for firing transitions only.
-    # 转换前的处理
+    # Pre-transition handling
     def before_transition(self, event, state):
         # self.printDebug(f"BT: Before '{event}', on the '{state.id}' state.")
         self.current_transition = event
@@ -225,9 +225,9 @@ class StateMachineDrone(StateMachine):
 
 
     # This is for executing long-running UAV-actions
-    # 转换时的处理
+    # On-transition handling
     def on_transition(self, event, state):
-        """状态转换时的处理"""
+        """Handles a state transition."""
         self.printDebug(f"OT: On '{event}', on the '{state.id}' state.")
         
         try:
@@ -236,7 +236,7 @@ class StateMachineDrone(StateMachine):
             #         print("Not CF Operation Strategy selected or controller not initialized!")
             #         raise Exception("Not CF Operation Strategy selected!")
 
-            # 调用Curl命令会触发下列事件， 见routes.py
+            # A curl call triggers the events below; see routes.py
             if event == "activate_idle":
                 if self.uavOpStrategyImpl:
                     success = self.uavOpStrategyImpl.activate_idle_simple()
@@ -256,10 +256,10 @@ class StateMachineDrone(StateMachine):
                         print("Failed to land")
                 
             elif event == "begin_nav_goal_sequence" or event == "next_nav_goal":
-                # 注意第一个导航点导航完毕后会进入after_transition中继续处理
+                # Note: once the first waypoint is reached, processing continues in after_transition
                 if self.uavOpStrategyImpl and len(self.targetPointsQueue) > 0:
                     targetPoint = self.targetPointsQueue.pop(0)
-                    success = self.uavOpStrategyImpl.navigate_to_simple(targetPoint) #navigate_to_simple是cf_drone_ops.py中的方法,ROS2调用GOTO方法
+                    success = self.uavOpStrategyImpl.navigate_to_simple(targetPoint) # navigate_to_simple lives in cf_drone_ops.py; under ROS2 it calls the GoTo service
                     if not success:
                         print(f"Failed to navigate to {targetPoint}")
             elif event == "begin_wall_following":
@@ -277,13 +277,13 @@ class StateMachineDrone(StateMachine):
                     if not success:
                         print("Failed to stop wall following")
             elif event == "abort_to_hover":
-                # 立即停止当前轨迹/推送，强制回到hover
+                # Stop the current trajectory/stream immediately and force a return to hover
                 if self.uavOpStrategyImpl:
                     try:
-                        # 1. 先停止当前setpoints
+                        # 1. Stop the current setpoints first
                         if hasattr(self.uavOpStrategyImpl, 'controller') and self.uavOpStrategyImpl.controller is not None:
                             self.uavOpStrategyImpl.controller.stop()
-                        # 2. 强制标记目标已到达，允许状态转换
+                        # 2. Force the target to count as reached, so the transition is allowed
                         self.goalReached = True
                         print(f"Force goal_reached=True for {self._uav_name} to allow abort_to_hover transition")
                     except Exception as e:
@@ -297,7 +297,7 @@ class StateMachineDrone(StateMachine):
                 global ISRUNNING
                 ISRUNNING = False
             
-            # 生成状态机图
+            # Render the state-machine diagram
             self.writeSMGraph()
             
         except Exception as e:
@@ -331,42 +331,42 @@ class StateMachineDrone(StateMachine):
     # Initiate Long-running action here via transitionFirings instead of on_transition (direct execution of UAV operation)
     ### After 'begin_nav_goal_sequence', on the 'flying' state: only when next_nav_goal is executed the 
     # condition goal_reached(self) on this transition is fired
-    # 转换后的处理
+    # Post-transition handling
     def after_transition(self, event, state):
-        """转换后的处理"""
+        """Handles the state after a transition."""
         self.printDebug(f"AT: After '{event}', on the '{state.id}' state.")
         
         try:
-            # 当无人机在flying状态，且收到next_nav_goal或begin_nav_goal_sequence事件时
+            # When the drone is flying and a next_nav_goal or begin_nav_goal_sequence event arrives
             if (state == self.flying and (event == "next_nav_goal" or event == "begin_nav_goal_sequence")):
                 if len(self.targetPointsQueue) > 0:
                     self.printDebug(f"\tNext_Nav_Goal: There are still targets left: {len(self.targetPointsQueue)}")
-                    # 等待一段时间让无人机开始移动
+                    # Wait a moment for the drone to start moving
                     time.sleep(0.5)
-                    self.next_nav_goal() # 如果还有导航点则回到on transition继续处理下一个导航点
+                    self.next_nav_goal() # if waypoints remain, go back to on_transition and handle the next one
                 else:
                     self.printDebug("\tLet drone hover now, navgoals are empty")
-                    self.keep_hovering() # 如果导航点为空则进入keep_hovering状态
+                    self.keep_hovering() # if there are no waypoints left, switch to keep_hovering
             
-            # 当无人机从hovering进入flying状态（可能是实时移动触发的）
+            # When the drone goes from hovering to flying (possibly triggered by a real-time move)
             if (state == self.flying and event == "begin_nav_goal_sequence"):
-                # 检查是否是通过实时移动触发的
-                # 如果是实时移动，我们需要等待移动完成
+                # Check whether this was triggered by a real-time move
+                # For a real-time move we would have to wait for it to finish,
                 self.printDebug("\tReal-time move initiated, waiting for completion...")
-                # 实时移动会立即执行，所以这里不需要额外处理
+                # but a real-time move executes immediately, so nothing extra is needed here
             
-            # 当无人机在hovering状态，且是从flying状态转来的
+            # When the drone is hovering after coming from the flying state
             if (state == self.hovering and event == "keep_hovering"):
-                # 我们不会在这里自动触发降落
-                # 降落决策由auto_state_machine.py控制
+                # landing is not triggered automatically here;
+                # the landing decision is made by auto_state_machine.py
                 self.printDebug("\tDrone is now hovering, waiting for next command")
                 
-            # 当无人机在landed状态时，发出落地完成事件
+            # When the drone is landed, emit the landing-complete event
             if (state == self.landed): 
                 self.printDebug("\tstate landed reached")
                 self.landing_completed()
                 
-            # 更新状态机图
+            # Update the state-machine diagram
             self.writeSMGraph()
         except Exception as e:
             print(f"Error in after_transition: {str(e)}")
@@ -376,20 +376,20 @@ class StateMachineDrone(StateMachine):
         return "after_transition"
 
     def writeSMGraph(self):
-        # 检查_uav_name是否存在
+        # Check that _uav_name exists
         if not hasattr(self, '_uav_name'):
             print("Warning: _uav_name not set, skipping graph generation")
             return
             
         current_state = self.current_state.id
-        # 只在状态发生变化时生成新图片
+        # Only render a new image when the state has actually changed
         if current_state != self._last_state:
             # Generate the state diagram
             smGraph = DotGraphMachine(self)
-            # 使用当前无人机的编号生成文件名
+            # Build the file name from this drone's counter
             image_number = self._image_numbers[self._uav_name]
 
-            # 使用无人机ID作为文件夹名
+            # Use the drone ID as the folder name
             img_dir = f"/home/crazy/cps.asset.crazyflie/controller/cf.PyControl/webview/img/{self._uav_name}"
             os.makedirs(img_dir, exist_ok=True)
             smGraphPath = f"{img_dir}/uav{image_number}.png"
@@ -397,20 +397,20 @@ class StateMachineDrone(StateMachine):
             dot = smGraph()
             dot.write_png(smGraphPath)
             
-            # 更新当前无人机的编号
+            # Update this drone's counter
             self._image_numbers[self._uav_name] = (image_number % 100) + 1
             self._last_state = current_state
             
-            # 更新latest.txt文件
+            # Update latest.txt
             latest_file = f"{img_dir}/latest.txt"
             try:
-                # 读取当前latest.txt中的值
+                # Read the current value from latest.txt
                 current_latest = 1
                 if os.path.exists(latest_file):
                     with open(latest_file, 'r') as f:
                         current_latest = int(f.read().strip())
                 
-                # 确保使用较大的编号
+                # Keep the larger of the two counters
                 new_latest = max(current_latest, image_number)
                 with open(latest_file, 'w') as f:
                     f.write(str(new_latest))
@@ -431,11 +431,11 @@ def checkIfFlying(drone: StateMachineDrone):
 # This method implements a "larger" action sequence in the state machine.
 # It  implements navigation for drones based on a set of coordinates.
 # It wraps calls to the atomic action "navigate_to_simple" of a drone
-# 这是一个状态机中的导航序列实现
-# 基于坐标集合进行导航
-# 是对无人机原子动作navigate_to_simple的封装
+# Navigation-sequence implementation used by the state machine.
+# It navigates through a list of coordinates
+# and wraps the atomic drone action navigate_to_simple.
 def navigate_to_simple(drone: StateMachineDrone):
-    """执行导航命令"""
+    """Executes a navigation command."""
     if not drone.uavOpStrategyImpl:
         drone.printDebug("\tNo UAV operation strategy available")
         return False
@@ -445,11 +445,11 @@ def navigate_to_simple(drone: StateMachineDrone):
         drone.keep_hovering()
         return False
         
-    # 获取目标位置
+    # Get the target position
     target = drone.targetPointsQueue[0]
     drone.printDebug(f"\tNavigating to: ({target.x:.2f}, {target.y:.2f}, {target.z:.2f})")
     
-    # 执行导航命令
+    # Execute the navigation command
     try:
         success = drone.uavOpStrategyImpl.navigate_to_simple(target)
         if success:
