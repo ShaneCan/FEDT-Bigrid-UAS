@@ -1,4 +1,4 @@
-# FEDT-Bigraph-UAS
+<h1 align="center">FEDT-Bigraph-UAS</h1>
 
 [![Project Page](https://img.shields.io/badge/🌐_Project_Page-1f6feb?style=flat-square)](https://shanecan.github.io/FEDT-Bigrid-UAS/)
 [![Video](https://img.shields.io/badge/📺_Video-FF0000?style=flat-square)](https://www.youtube.com/watch?v=FBFthZUpgag)
@@ -24,17 +24,9 @@ This project demonstrates how Bigraphs can be used to model and control Crazyfli
 
 ## Contributions
 
-1. **A unified bigraph modelling method** for UAS flight operations in discretised 3D airspace,
-
-   integrating airspace topology, occupancy, adjacency, mission phase, battery state, and
-     communication state into a single executable runtime representation.
-2. **A pre-execution verification and fail-safe mechanism** based on bigraph rewriting. Candidate
-
-   movements and state transitions are executed only when their reaction-rule preconditions hold,
-     enforcing grid occupancy exclusion and logical consistency before actuation.
-3. **An end-to-end runtime assurance system** with ROS-based UAS execution, model synchronisation,
-
-   and operator monitoring.
+1. **A unified bigraph modelling method** for UAS flight operations in discretised 3D airspace, integrating airspace topology, occupancy, adjacency, mission phase, battery state, and communication state into a single executable runtime representation.
+2. **A pre-execution verification and fail-safe mechanism** based on bigraph rewriting. Candidate movements and state transitions are executed only when their reaction-rule preconditions hold, enforcing grid occupancy exclusion and logical consistency before actuation.
+3. **An end-to-end runtime assurance system** with ROS-based UAS execution, model synchronisation, and operator monitoring.
 
 The framework is **planner-independent**: it acts as a runtime assurance layer that supervises the
 outputs of existing planners or controllers, rather than serving as a trajectory generation or
@@ -94,18 +86,13 @@ locally.
 Start each service in a separate terminal. Commands below use Linux/WSL; Java
 can also run in a Windows IDE or with `mvnw.cmd`.
 
-1. Start the backend: for Webots, run the simulator command below and wait for
-
-   `READY`; for hardware, follow the [hardware setup](cps.asset.crazyflie/README.md#hardware)
-     to start the upstream radio/localization server, then `cf.PyControl`.
+1. Start the backend: for Webots, run the simulator command below and wait for  `READY`; for hardware, follow the [hardware setup](cps.asset.crazyflie/README.md#hardware) to start the upstream radio/localization server, then `cf.PyControl`.
 2. Start the grid provider for ordinary simulation or hardware:
    ```bash
      cd bigrid-provider-service
      ./mvnw spring-boot:run -Dspring-boot.run.arguments="--server.port=7070"
    ```
-3. Run `org.example.Application` from `bigraphs.drone-collision-free` in your IDE,
-
-   or use Maven with an explicit main class:
+3. Run `org.example.Application` from `bigraphs.drone-collision-free` in your IDE, or use Maven with an explicit main class:
 
 The same arguments go in the IDE's **Program arguments** field. Select one
 profile as needed; profiles configure Java and do not switch the Webots world.
@@ -157,8 +144,7 @@ bash run_verified_analysis.sh        # exhaustive verification of the 2x2x2 conf
 bash verification_analysis.sh 2000   # bounded exploration of the 3x3x3 configuration
 ```
 
-See [`bigrid/README.md`](bigrid/README.md) for the models, the properties that are checked, and the
-expected output.
+See [`bigrid/README.md`](bigrid/README.md) for the models, the properties that are checked, and the expected output.
 
 ## Citation
 
