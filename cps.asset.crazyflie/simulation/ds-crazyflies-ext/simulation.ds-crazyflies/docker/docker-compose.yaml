@@ -1,28 +1,41 @@
-name: fedt-uas
+name: crazyflie-webots
 services:
   webots:
-    image: ${FEDT_IMAGE:-fedt-crazyflies:humble-webots-r2025a}
+    image: ds-crazyflies:v3-humble
     build:
       context: ../../../..
       dockerfile: simulation/ds-crazyflies-ext/simulation.ds-crazyflies/docker/Dockerfile
-    container_name: fedt-crazyflies-dev
+    container_name: ds-crazyflies-dev
     labels:
-      io.fedt.stack: fedt-bigrid-uas.webots
-      io.fedt.source: ${FEDT_SOURCE_ID:-manual-compose}
+      io.cps.crazyflie.stack: cps.asset.crazyflie.webots3
     init: true
     network_mode: host
     ipc: host
+    stdin_open: true
+    tty: true
+    runtime: ${CF_CONTAINER_RUNTIME:-runc}
+    # WSLg OpenGL uses DirectX interop; NVIDIA's CUDA runtime alone is insufficient.
+    devices:
+      - /dev/dxg:/dev/dxg
     environment:
       DISPLAY: ${DISPLAY:-}
       QT_X11_NO_MITSHM: '1'
-      FEDT_HEADLESS: ${FEDT_HEADLESS:-0}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      MESA_D3D12_DEFAULT_ADAPTER_NAME: ${MESA_D3D12_DEFAULT_ADAPTER_NAME:-NVIDIA}
+      LD_LIBRARY_PATH: /usr/lib/wsl/lib
+      CF_HEADLESS: ${CF_HEADLESS:-0}
       PYTHONDONTWRITEBYTECODE: '1'
     volumes:
-      - ../../../../controller:/workspace/controller:ro
+      - ../../../../controller:/workspace/controller:rw
       - ../tools:/ds/ds-crazyflies/tools:ro
+      - ../tests:/ds/ds-crazyflies/tests:ro
       - ../config.json:/ds/ds-crazyflies/config.json:ro
-      - ../../crazyflie.wbt:/ds/crazywebotsworld/worlds/crazyflie.wbt:rw
+      - ../crazyflie.wbt:/ds/crazywebotsworld/worlds/crazyflie.wbt:rw
+      - ../resources/protos:/ds/crazywebotsworld/protos:ro
       - ../.runtime:/ds/ds-crazyflies/.runtime:rw
+      - /tmp/.X11-unix:/host-x11:ro
+      - /usr/lib/wsl:/usr/lib/wsl:ro
     working_dir: /ds/ds-crazyflies
     command: [python3, tools/runtime.py]
     healthcheck:
@@ -31,4 +44,4 @@ services:
       timeout: 5s
       start_period: 120s
       retries: 3
-    stop_grace_period: 25s
+    stop_grace_period: 20s

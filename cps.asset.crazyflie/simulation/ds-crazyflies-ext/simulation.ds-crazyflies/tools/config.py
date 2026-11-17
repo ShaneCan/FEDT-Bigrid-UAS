@@ -33,10 +33,31 @@ def drone_ids(world):
 
 def load(world=None):
     config = json.loads((HERE / "config.json").read_text())
-    config["drone_ids"] = drone_ids(world or HERE.parent / "crazyflie.wbt")
+    config["drone_ids"] = drone_ids(world or HERE / "crazyflie.wbt")
     return config
 
 
+def world_metadata(world):
+    path = Path(world)
+    text = re.sub(r'"(?:\\.|[^"\\])*"|#[^\n]*', '', path.read_text())
+    robots = []
+    for match in re.finditer(r'\bCrazyflie\s*\{', text):
+        depth, end = 1, match.end()
+        while depth and end < len(text):
+            depth += (text[end] == '{') - (text[end] == '}')
+            end += 1
+        body = text[match.end():end-1]
+        identity = re.search(r'\bid\s+(\d+)\b', body)
+        position = re.search(r'\btranslation\s+([-+\d.eE]+)\s+([-+\d.eE]+)\s+([-+\d.eE]+)', body)
+        if not identity or not position:
+            raise ValueError("Experiment metadata requires explicit robot IDs and translations")
+        robots.append(dict(id=int(identity[1]), initial_position=[float(position[i]) for i in (1, 2, 3)]))
+    if sorted(robot['id'] for robot in robots) != drone_ids(path):
+        raise ValueError("Invalid world robot metadata")
+    return dict(robots=sorted(robots, key=lambda robot: robot['id']))
+
+
 def ports(config):
-    return [config[k] + i for k in ("http_port", "web_port", "ws_port")
-            for i in range(len(config["drone_ids"]))]
+    result = [config[k] + i for k in ("http_port", "web_port", "ws_port", "wall_port")
+              for i in range(len(config["drone_ids"]))]
+    return result + ([config["experiment_port"]] if "experiment_port" in config else [])

@@ -203,11 +203,15 @@ def docker_start(args):
 
 
 def local_ros(args, extra):
-    # Preserve the original real-ROS entry point without editing its workspace.
-    setup = Path(os.environ.get("CF_ROS_SETUP", "/home/crazy/crazyflie_mapping_demo/ros2_ws/install/setup.bash"))
+    if not os.environ.get("CF_ROS_SETUP") or not os.environ.get("CF_CRAZYFLIES_CONFIG"):
+        raise RuntimeError("Set CF_ROS_SETUP to your workspace setup.bash and CF_CRAZYFLIES_CONFIG to your crazyflies.yaml")
+    setup = Path(os.environ["CF_ROS_SETUP"]).expanduser().resolve()
+    configuration = Path(os.environ["CF_CRAZYFLIES_CONFIG"]).expanduser().resolve()
     if not setup.is_file():
         raise RuntimeError(f"ROS workspace missing: {setup}; set CF_ROS_SETUP to your existing setup.bash")
-    result = subprocess.run(["bash", "-c", 'source /opt/ros/humble/setup.bash && source "$1" && env -0', "cf-ros", str(setup)],
+    if not configuration.is_file():
+        raise RuntimeError(f"Hardware configuration missing: {configuration}")
+    result = subprocess.run(["bash", "-c", 'source "$1" && env -0', "cf-ros", str(setup)],
                             check=True, capture_output=True, env={k: v for k, v in os.environ.items() if k not in
                             {"ROS_DISTRO", "ROS_VERSION", "ROS_PYTHON_VERSION", "PYTHONPATH", "LD_LIBRARY_PATH",
                              "AMENT_PREFIX_PATH", "COLCON_PREFIX_PATH", "CMAKE_PREFIX_PATH", "ROS_PACKAGE_PATH"}})
@@ -216,9 +220,11 @@ def local_ros(args, extra):
     environment["ROS_DOMAIN_ID"] = os.environ.get("ROS_DOMAIN_ID", "30")
     environment["RMW_IMPLEMENTATION"] = os.environ.get("RMW_IMPLEMENTATION", "rmw_cyclonedds_cpp")
     import yaml
-    configuration = REPO / "simulation/simulation-crazyswarm2/dev_ws/ros2/src/crazyswarm2/crazyflie/config/crazyflies.yaml"
     robots = yaml.safe_load(configuration.read_text())["robots"]
-    required = [int(name[2:]) for name, value in robots.items() if value.get("enabled")]
+    enabled = [name for name, value in robots.items() if value.get("enabled")]
+    if any(not name.startswith("cf") or not name[2:].isdigit() for name in enabled):
+        raise RuntimeError("Enabled hardware names must be cf231 through cf238")
+    required = sorted(int(name[2:]) for name in enabled)
     if not required or any(drone not in range(231, 239) for drone in required):
         raise RuntimeError("Hardware config must enable cf231–cf238; HTTP ports remain fixed at 5000–5007")
     processes = Processes(CF / ".runtime/ros")

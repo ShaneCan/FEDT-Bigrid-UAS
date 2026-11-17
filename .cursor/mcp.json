@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "bigraph-editor": {
+      "command": "node",
+      "args": [
+        "c:\\Users\\xtizh193g\\.cursor\\extensions\\dev-manuel.bigraphide-0.0.1\\dist\\mcp-stdio-entry.js"
+      ],
+      "env": {
+        "BIGRAPH_MCP_PORT_FILE": "c:\\Users\\xtizh193g\\AppData\\Roaming\\Cursor\\User\\globalStorage\\dev-manuel.bigraphide\\mcp-api-port"
+      }
+    }
+  }
+}

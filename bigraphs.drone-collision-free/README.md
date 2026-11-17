@@ -1,8 +1,8 @@
 # UAV Grid-based Collision-Free Navigation System using Bigraph + ROS2 + CDO
 
-A Bigraph × ROS2 × A* Digital Twin System for Safe UAV Navigation
+A Bigraph × ROS2 × time-expanded A* + CBS Digital Twin System for Safe UAV Navigation
 
-This project implements a grid-based, collision-free UAV navigation system using Bigraphical Reactive Systems (BRS), ROS2, and A* path planning.
+This project implements a grid-based, collision-free UAV navigation system using Bigraphical Reactive Systems (BRS), ROS2, and time-expanded A* with Conflict-Based Search (CBS).
 
 The system enables a UAV to fly from takeoff to landing safely in a discretized airspace while maintaining real-time digital twin consistency between the world model, UAV agent model, and live ROS2 data.
 
@@ -15,7 +15,7 @@ The system integrates:
 - Bigraph-generated World Model
 - UAV Agent Model with attributes (battery, RSSI, state…)
 - Real-time ROS2 data
-- A* path planning for grid navigation
+- Time-expanded A* + CBS for multi-UAS grid navigation
 - RESTful commands to control the drone
 
 Together, the system enables autonomous, rule-based, collision-free UAV flight across a grid-based airspace.
@@ -27,11 +27,11 @@ Together, the system enables autonomous, rule-based, collision-free UAV flight a
 Bigraph reaction rules define takeoff/landing behavior.
 When conditions match (rule-based), REST commands are sent to control the UAV, and agent attributes are updated.
 
-### 2. A\* Path Planning in Grid Airspace
+### 2. A\* + CBS Path Planning in Grid Airspace
 
 Each UAV receives a target destination.
-A\* computes a sequence of next grid cells (grid centers), with considering obstacle/weather, until to reach the goal.
-Movement uses 8 (2D) or 10 (3D) directions depending on availability.
+Time-expanded A\* searches individual paths, and CBS resolves conflicts between UAS. Joint polynomial trajectories are checked for grid conflicts and continuous separation before dispatch; planning fails if no checked joint plan is found within the search limits.
+Movement uses 10 (3D) directions.
 
 ### 3. Rule-Based Movement & Collision Avoidance
 
@@ -39,7 +39,7 @@ Before entering a new grid:
 
 - Check if the next move matches a **movement rule** in the compose model.
 - Ensure the next grid is not occupied by another UAV.
-- If blocked, the UAV waits or replans using A\*.
+- If blocked, the UAV waits or replans using A\* + CBS.
 
 ### 4. Dynamic Bigraph Updates
 
@@ -65,9 +65,9 @@ All updates feed back into the bigraph model.
 
 This component works with the following software stack:
 
-- Java >=17 + Maven >=3.8.7
+- JDK 21 + Maven wrapper
 - Spring 3.3.5
-- Bigraph Framework 2.3.1
+- Bigraph Framework 2.3.2
 - BDSL 2.0.1
 - CDO for Spring Data 0.7.5
 - cf.pyControl-ROS2 version
@@ -83,22 +83,27 @@ To view and modify the bigraph in the database, you can optionally install CDO e
 
 ### Demo setup
 
-To run the demo, the bigrid provider service and Crazyflie CPS asset are required. Refer to the outer README or `launch_application.sh` in the project root for more information.
+Start the selected backend, then the grid provider when needed, then
+`src/main/java/org/example/Application.java`. See the root
+[Usage instructions](../README.md#usage) for the exact commands and profile table.
 
-To run via IDE (Eclipse, IntelliJ IDEA, Visual Code, ...) instead, replace the last two launch steps in the script with the following manual steps:
+In your IDE, use `org.example.Application` as the main class and this module as
+the working directory. For ordinary simulation, use Program arguments
+`--bigrid.service.base-url=http://127.0.0.1:7070 --cdo.enabled=false --ros.update.enabled=false`.
+For another configuration, select one of `--spring.profiles.active=hardware`,
+`--spring.profiles.active=drift` or `--spring.profiles.active=multievent`.
+The profiles do not switch the simulator world; do that manually before startup.
 
-- Run a method of `src/test/java/org.example/CDOStandaloneServerTest.java` in the test folder; this launches CDO
-- Run the class `src/main/java/org/example/Application.java` (2D, legacy) 
-- Run the class `src/main/java/org/example/Application3D.java` (3D, maintained)
+The Maven equivalent is:
 
-Alternatively, they can be manually launched from terminal. For the CDO server, run:
-
-```shell
-$ ./mvnw test -DrunDisabledTests=true -Dtest="CDOStandaloneServerTest#run_server_test_01"
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.mainClass=org.example.Application \
+  -Dspring-boot.run.arguments="--spring.profiles.active=drift"
 ```
 
-and for the main application:
-
-```shell
-$ ./mvnw spring-boot:run
-```
+`ApplicationBaseline` uses the same planner and profiles with Bigraph matching
+and local authorization disabled. `Application3D` / `Application3DBaseline` retain
+the older flow. CDO is optional: start
+`./mvnw test -DrunDisabledTests=true -Dtest=CDOStandaloneServerTest#run_server_test_01`
+only when enabling `--cdo.enabled=true`. ROSBridge observation is optional too;
+use `--ros.update.enabled=false` when no bridge is running.

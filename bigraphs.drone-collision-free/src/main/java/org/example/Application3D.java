@@ -73,7 +73,7 @@ public class Application3D implements CommandLineRunner {
     private static final long TAKEOFF_PROTECTION_MS = 5000;
     private static final long TAKEOFF_COOLDOWN_MS = 5000;
     private static final long WAIT_TIMEOUT_MS = 8000;
-
+    /** Replan from the observed position when a navigation command times out. */
     private static final long MOVE_TIMEOUT_MS = 10000;
     private static final long MOVE_INTERVAL_MS = 2000;
     private static final long LANDING_DELAY_MS = 2000;
@@ -87,7 +87,7 @@ public class Application3D implements CommandLineRunner {
         store.computeIfAbsent(droneId, k -> new ConcurrentLinkedQueue<>()).add(ms);
     }
 
-    /** Measure planning time without REST execution or intentional waits. */
+    /** Planning and geometric checks only; excludes matching, reservations, REST and waits. */
     private void logPlanningLatency(String droneId, String action, long startNano, long endNano) {
         double ms = elapsedMs(startNano, endNano);
         recordLatency(planningLatenciesMsByDrone, droneId, ms);
@@ -95,7 +95,7 @@ public class Application3D implements CommandLineRunner {
                 + String.format(Locale.ROOT, "%.3f", ms) + " ms");
     }
 
-    /** Measure only the Bigraph match used to authorize an action. */
+    /** Runtime-gate matching time only; excludes planning and CDO persistence. */
     private void logMatchOnlyLatency(String droneId, String action, long startNano, long endNano) {
         double ms = elapsedMs(startNano, endNano);
         recordLatency(gateMatchLatenciesMsByDrone, droneId, ms);
@@ -103,7 +103,7 @@ public class Application3D implements CommandLineRunner {
                 + String.format(Locale.ROOT, "%.3f", ms) + " ms");
     }
 
-    /** Measure the HTTP request/response interval separately from execution completion. */
+    /** HTTP round-trip time, excluding subsequent waits. */
     private void logRestLatency(String droneId, String action, long startNano, long endNano) {
         double ms = elapsedMs(startNano, endNano);
         recordLatency(restLatenciesMsByDrone, droneId, ms);
@@ -117,14 +117,13 @@ public class Application3D implements CommandLineRunner {
 
     // Battery thresholds (volts)
 
-    // Voltage thresholds are in volts; preserve experimental values.
     private static final double BATTERY_EMPTY_THRESHOLD = 2.1; //3.1！！！！！！！！！
     private static final double BATTERY_LOW_THRESHOLD = 2.2; //3.2！！！！！！！！！
 
     // RSSI threshold
     private static final int RSSI_BAD_THRESHOLD = 85;//65！！！！！！！！！
 
-    // Synthetic readings are classified using the thresholds above.
+    // Synthetic readings chosen to trigger the corresponding health thresholds.
     private static final double INJECT_BATTERY_NORMAL_V = 4.0;   // >= BATTERY_LOW_THRESHOLD
     private static final double INJECT_BATTERY_LOW_V    = 3.15;  // [EMPTY, LOW) -> Low
     private static final double INJECT_BATTERY_EMPTY_V  = 3.0;  // < EMPTY     -> Empty
@@ -186,6 +185,7 @@ public class Application3D implements CommandLineRunner {
     @Value("${drone.control.start-port:5000}")
     private int droneControlStartPort;
 
+    // Targets: x1,y1;x2,y2;... in world coordinates.
     @Value("${drone.targets:-1,-1.5;1,-1.5;1.5,-1;1.5,1;1,1.5;-1,1.5;-1.5,1;-1.5,-1;-1,-1;1,-1;1,1;-1,1}")
     private String droneTargetsConfig;
 
@@ -203,26 +203,25 @@ public class Application3D implements CommandLineRunner {
     @Value("${fault.injection.port:8090}")
     private int faultInjectionPort;
 
-    @Value("${collective.ascent.enabled:true}")
-    private boolean collectiveAscentEnabled;
+    // Absolute world-frame takeoff target in metres, shared by both 3D entry points.
+    @Value("${takeoff.height:0.9}")
+    private double takeoffHeight = 0.9;
 
-    @Value("${collective.ascent.altitude:0.9}")
-    private double collectiveAscentAltitude;
-
-    @Value("${collective.ascent.takeoff-wait-timeout-ms:8000}")
-    private long collectiveAscentTakeoffWaitMs;
-
-    @Value("${collective.ascent.settle-ms:4000}")
-    private long collectiveAscentSettleMs;
+    // Absolute altitude = base-altitude + target layer * layerHeight; avoids accumulated drift.
 
     @Value("${navigation.absolute-altitude.enabled:true}")
     private boolean absoluteAltitudeEnabled;
+    // Physical operating altitude of layer 0, in meters, for absolute-altitude mode.
 
     @Value("${navigation.base-altitude:0.3}")
     private double navigationBaseAltitude;
 
+    // Optionally keep an out-of-grid aircraft at its start cell before takeoff.
+
     @Value("${takeoff.allow-out-of-grid:true}")
     private boolean allowOutOfGridPlacement;
+
+    // Count co-occupancy only after this many consecutive overlapping frames; 1 disables debouncing.
 
     @Value("${collision.violation.debounce-frames:3}")
     private int violationDebounceFrames;
@@ -238,22 +237,27 @@ public class Application3D implements CommandLineRunner {
     private final Set<Integer> obstacleGrids = ConcurrentHashMap.newKeySet();
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private DroneControllerSync controllerSync;
+    private final Map<Integer, String> controllerTasks = new ConcurrentHashMap<>();
+    private final Map<Integer, String> controllerReasons = new ConcurrentHashMap<>();
     private final Map<String, String> controllerWaitReasons = new ConcurrentHashMap<>();
 
+    // Observed positions: droneId -> {x, y, gridIndex}.
     private final Map<String, DronePosition> dronePositions = new ConcurrentHashMap<>();
 
+    // Flight state: droneId -> {status, z, hasTakenOff}.
     private final Map<String, DroneStatus> droneStatuses = new ConcurrentHashMap<>();
 
     private final AtomicBoolean collisionRiskDetected = new AtomicBoolean(false);
 
     private final Map<Integer, GridReservation> gridReservations = new ConcurrentHashMap<>();
 
+    // Serializes CDO updates from the model and status-monitor threads.
     private final Object cdoLock = new Object();
 
     private DynamicSignature combinedSignature;
-    private DynamicSignature serviceWorldSignature;  
+    private DynamicSignature serviceWorldSignature;
 
+    // Retain object IDs to update existing CDO objects and preserve their history.
     private CDOID cdoIdWorld;
     private CDOID cdoIdDrone;
     private CDOID cdoIdComposed;
@@ -268,7 +272,7 @@ public class Application3D implements CommandLineRunner {
     private final AtomicLong coOccupancyViolationCount = new AtomicLong(0);
 
     private final Map<Integer, Integer> coOccupancyStreak = new ConcurrentHashMap<>();
-
+    // Count each sustained conflict once; clearing it allows a later conflict to be counted.
     private final Set<Integer> countedViolationGrids = ConcurrentHashMap.newKeySet();
 
     // Per-decision, per-drone latency samples (ms), disjoint phases: Planning (A* + diagonal check) ->
@@ -292,7 +296,7 @@ public class Application3D implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws Exception {
-        controllerSync = new DroneControllerSync(httpClient, droneControlBaseUrl);
+        validateTakeoffHeight();
         // Ctrl+C (or any JVM shutdown) before all drones land would otherwise silently discard
         // every collected metric (completion time, violations, per-decision latencies), since
         // they only ever lived in memory and were written out by maybePrintMissionReport().
@@ -330,6 +334,7 @@ public class Application3D implements CommandLineRunner {
         dronePart = droneModel(currentSiteCount);
         composite = composeWorldAndDrones(worldPart, dronePart);
 
+        // Register metamodels before inserting instances into CDO.
         EPackage MM = createOrGetBigraphMetaModel(sig());
         worldPart = BigraphUtil.toBigraph(MM, template.insert(worldPart.getInstanceModel(), "/world"), sig());
         dronePart = BigraphUtil.toBigraph(MM, template.insert(dronePart.getInstanceModel(), "/drone"), sig());
@@ -370,18 +375,19 @@ public class Application3D implements CommandLineRunner {
             System.out.println("✓ Battery and communication status monitoring thread started");
         }
 
+        // Allow health telemetry to settle before the pre-takeoff check.
+
         if (rosUpdateEnabled) {
             System.out.println("Waiting for ROS2 status data to stabilize (3 seconds)...");
             TimeUnit.MILLISECONDS.sleep(3000);
             System.out.println("✓ ROS2 status data should be stable now\n");
         }
 
+        // Resolve starts after ROS telemetry has stabilized.
         parseDroneTargets();
 
         if (droneControlEnabled) {
             performTakeoffSequence();
-
-            performCollectiveAscent();
         }
 
         System.out.println("\n========================================");
@@ -389,7 +395,7 @@ public class Application3D implements CommandLineRunner {
         System.out.println("========================================\n");
 
         while (true) {
-            TimeUnit.MILLISECONDS.sleep(1000);  
+            TimeUnit.MILLISECONDS.sleep(1000);
 
             if (!droneControlEnabled || !rosUpdateEnabled) {
                 continue;
@@ -409,6 +415,7 @@ public class Application3D implements CommandLineRunner {
         }
     }
 
+    /** Update models in the background; serialize CDO writes with the status monitor. */
     private void continuousModelUpdate() {
         try {
             int currentSiteCount = worldPart.getSites().size();
@@ -417,6 +424,7 @@ public class Application3D implements CommandLineRunner {
             while (true) {
                 updateCount++;
 
+                // Fetch outside the CDO lock; this is only an HTTP request.
                 PureBigraph latestWorld = fetchWorldModelFromService();
                 int newSiteCount = latestWorld.getSites().size();
 
@@ -466,6 +474,9 @@ public class Application3D implements CommandLineRunner {
     private void prepareDatabase() throws Exception {
         System.out.println("Preparing CDO database...");
 
+        // This only clears resources; metamodel registration follows signature construction.
+
+        // A previous run may have left dirty or missing resources.
         String[] paths = {"/drone", "/world", "/composed"};
         for (String path : paths) {
             try {
@@ -486,11 +497,11 @@ public class Application3D implements CommandLineRunner {
     private void registerMetaModelToCDO() throws Exception {
 
         DynamicSignature signature = sig();
-        EPackage metaModel = createOrGetBigraphMetaModel(signature); 
+        EPackage metaModel = createOrGetBigraphMetaModel(signature);
 
-        EPackage.Registry.INSTANCE.put(metaModel.getNsURI(), metaModel); 
-        CDOPackageRegistry.INSTANCE.put(metaModel.getNsURI(), metaModel); 
-        template.getCDOPackageRegistry().put(metaModel.getNsURI(), metaModel); 
+        EPackage.Registry.INSTANCE.put(metaModel.getNsURI(), metaModel);
+        CDOPackageRegistry.INSTANCE.put(metaModel.getNsURI(), metaModel);
+        template.getCDOPackageRegistry().put(metaModel.getNsURI(), metaModel);
     }
 
     private DynamicSignature sig() {
@@ -569,6 +580,7 @@ public class Application3D implements CommandLineRunner {
 
     private PureBigraph fetchWorldModelFromService() throws Exception {
 
+        // Deserialize the world with the merged signature metamodel.
         DynamicSignature combinedSig = sig();
         EPackage metaModel = createOrGetBigraphMetaModel(combinedSig);
 
@@ -682,20 +694,20 @@ public class Application3D implements CommandLineRunner {
 
             String droneId = "D" + idx;
 
-            String droneStatus = "Landed";  
+            String droneStatus = "Landed";
             DroneStatus status = droneStatuses.get(droneId);
             if (status != null) {
                 if (status.landingRuleApplied) {
-                    droneStatus = "Landed";  
+                    droneStatus = "Landed";
                 } else if (status.takeoffRuleApplied) {
-                    droneStatus = "flying";  
+                    droneStatus = "flying";
                 }
             }
             placements.set(idx, buildDrone(droneId, droneStatus, "OccupiedBy"));
         }
 
         Bigraph<DynamicSignature> result = placements.stream()
-                .reduce(pureLinkings(sig()).identity_e(), accumulator::apply); 
+                .reduce(pureLinkings(sig()).identity_e(), accumulator::apply);
         return (PureBigraph) result;
     }
 
@@ -724,6 +736,7 @@ public class Application3D implements CommandLineRunner {
                 .create();
     }
 
+    /** An OccupiedBy node containing ObstacleOrWeather marks a blocked cell. */
     private PureBigraph buildObstacleCell() throws InvalidConnectionException, TypeNotExistsException {
         PureBigraphBuilder<DynamicSignature> builder = pureBuilder(sig());
         return builder.root()
@@ -873,7 +886,6 @@ public class Application3D implements CommandLineRunner {
         return createCommunicationRule(id, "Bad", "Normal");
     }
 
-    /** Preserve unmatched sites while moving one drone between adjacent locales. */
     private ParametricReactionRule<PureBigraph> createDirectionalMoveRule(String id, String routeType) throws Exception {
         PureBigraphBuilder<DynamicSignature> redexB = pureBuilder(sig());
         PureBigraphBuilder<DynamicSignature> reactumB = pureBuilder(sig());
@@ -919,12 +931,19 @@ public class Application3D implements CommandLineRunner {
     }
 
     private boolean sendDroneControlRequest(String droneId, int port, String endpoint, String successMessage, String errorPrefix) {
+        return sendDroneControlRequest(droneId, port, endpoint, successMessage, errorPrefix, null);
+    }
+
+    private boolean sendDroneControlRequest(String droneId, int port, String endpoint, String successMessage,
+                                            String errorPrefix, Map<String, Double> payload) {
         try {
             String url = droneControlBaseUrl + ":" + port + endpoint;
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .timeout(Duration.ofSeconds(5))
-                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .header("Content-Type", "application/json")
+                    .POST(payload == null ? HttpRequest.BodyPublishers.noBody()
+                            : HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
                     .build();
 
             long restStart = System.nanoTime();
@@ -932,7 +951,7 @@ public class Application3D implements CommandLineRunner {
             long restEnd = System.nanoTime();
 
             if (response.statusCode() == 200) {
-                controllerSync.accepted(port, response.body());
+                acceptControllerResponse(port, response.body());
                 System.out.println("  ✓ " + droneId + " " + successMessage);
                 logRestLatency(droneId, endpoint, restStart, restEnd);
                 return true;
@@ -950,10 +969,73 @@ public class Application3D implements CommandLineRunner {
         return sendDroneControlRequest(droneId, port, "/activate_idle", "Idle state has been activated.", "activate idle");
     }
 
+    private void validateTakeoffHeight() {
+        if (!Double.isFinite(takeoffHeight) || takeoffHeight <= 0) {
+            throw new IllegalArgumentException("takeoff.height must be a finite positive height in metres");
+        }
+    }
+
     private boolean beginTakeoff(String droneId, int port) {
+        validateTakeoffHeight();
         DroneStatus status = droneStatuses.get(droneId);
         if (status != null) status.takeoffStartZ = status.z;
-        return sendDroneControlRequest(droneId, port, "/begin_takeoff", "Takeoff command has been transmitted.", "takeoff");
+        return sendDroneControlRequest(droneId, port, "/begin_takeoff",
+                "Takeoff command sent to Z=" + takeoffHeight + "m.", "takeoff", Map.of("height", takeoffHeight));
+    }
+
+    /** HTTP acceptance and grid entry do not confirm completion. */
+    void acceptControllerResponse(int port, String body) throws IOException {
+        JsonNode response = objectMapper.readTree(body);
+        if (response == null || !response.isObject()) throw new IOException("Invalid controller response: " + body);
+        String task = response.path("task_id").asText("");
+        if (task.isEmpty()) controllerTasks.remove(port); // Legacy response or an explicit hold.
+        else controllerTasks.put(port, task);
+        controllerReasons.remove(port);
+    }
+
+    boolean controllerSettled(int port) throws IOException, InterruptedException {
+        JsonNode state = getControllerJson(port, "/status");
+        String phase = state.path("phase").asText(state.path("state").asText("unknown"));
+        if (state.has("connected") && !state.path("connected").asBoolean()) {
+            return controllerBlocked(port, "telemetry unavailable");
+        }
+        if ("fault".equals(phase) || "offline".equals(phase)) {
+            return controllerBlocked(port, phase + ": " + state.path("error").asText(""));
+        }
+        String taskId = controllerTasks.get(port);
+        if (taskId != null) {
+            JsonNode task = getControllerJson(port, "/tasks/" + taskId);
+            String status = task.path("status").asText("unknown");
+            if (!"completed".equals(status)) {
+                return controllerBlocked(port, "task " + taskId + " " + status + ": " + task.path("error").asText(""));
+            }
+        }
+        if (!"hovering".equals(phase)) return controllerBlocked(port, "phase=" + phase);
+        controllerReasons.remove(port);
+        return true;
+    }
+
+    String controllerWaitReason(int port) { return controllerReasons.getOrDefault(port, "waiting for controller"); }
+
+    static boolean hasLiftedOff(boolean commandSent, double startZ, double z) {
+        return commandSent && Double.isFinite(startZ) && z > startZ + 0.10;
+    }
+
+    private boolean controllerBlocked(int port, String reason) {
+        controllerReasons.put(port, reason);
+        return false;
+    }
+
+    private JsonNode getControllerJson(int port, String path) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(droneControlBaseUrl + ":" + port + path))
+                .timeout(Duration.ofSeconds(2)).GET().build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200) {
+            throw new IOException(path + " HTTP " + response.statusCode() + ": " + response.body());
+        }
+        JsonNode value = objectMapper.readTree(response.body());
+        if (value == null || !value.isObject()) throw new IOException("Invalid " + path + ": " + response.body());
+        return value;
     }
 
     /** Polling is per drone; a busy drone never prevents others from advancing. */
@@ -961,11 +1043,11 @@ public class Application3D implements CommandLineRunner {
         int port = droneControlStartPort + Integer.parseInt(droneId.substring(1));
         String reason;
         try {
-            if (controllerSync.ready(port)) {
+            if (controllerSettled(port)) {
                 controllerWaitReasons.remove(droneId);
                 return true;
             }
-            reason = controllerSync.reason(port);
+            reason = controllerWaitReason(port);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
@@ -981,38 +1063,16 @@ public class Application3D implements CommandLineRunner {
 
     private boolean navigateTo(String droneId, int port, double x, double y, double z) {
         if (!controllerReady(droneId)) return false;
-        try {
-            String url = droneControlBaseUrl + ":" + port + "/navigate/" + x + "/" + y + "/" + z;
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(5))
-                    .POST(HttpRequest.BodyPublishers.noBody())
-                    .build();
-
-            long restStart = System.nanoTime();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            long restEnd = System.nanoTime();
-
-            if (response.statusCode() == 200) {
-                controllerSync.accepted(port, response.body());
-                System.out.println("  ✓ " + droneId + " navigation command sent -> (" +
-                        String.format("%.2f, %.2f, %.2f", x, y, z) + ")");
-                logRestLatency(droneId, "navigate", restStart, restEnd);
-                return true;
-            } else {
-                System.err.println("  !! " + droneId + " navigation failed: HTTP " + response.statusCode() + ": " + response.body());
-                return false;
-            }
-        } catch (Exception e) {
-            System.err.println("  !! " + droneId + " navigation failed: " + e.getMessage());
-            return false;
-        }
+        return sendDroneControlRequest(droneId, port, "/navigate/" + x + "/" + y + "/" + z,
+                String.format(Locale.ROOT, "Navigation command sent -> (%.2f, %.2f, %.2f)", x, y, z),
+                "navigation");
     }
 
     private boolean beginLanding(String droneId, int port) {
         return sendDroneControlRequest(droneId, port, "/begin_landing", "Landing command has been transmitted.", "landing");
     }
 
+    /** Match against the latest composite after applying current health readings. */
     private void performTakeoffSequence() throws Exception {
         if (!droneControlEnabled) {
             System.out.println("\n========================================");
@@ -1092,16 +1152,17 @@ public class Application3D implements CommandLineRunner {
                         continue;
                     }
 
-                    TimeUnit.MILLISECONDS.sleep(500);  
+                    TimeUnit.MILLISECONDS.sleep(500);
 
                     if (!beginTakeoff(droneId, port)) {
                         System.err.println("  !! Unable to send takeoff command, skipping " + droneId);
                         continue;
                     }
 
+                    // Start battery protection when the takeoff command is sent.
                     if (status != null) {
                         status.takeoffTime = System.currentTimeMillis();
-                        status.takeoffCommandSent = true;  
+                        status.takeoffCommandSent = true;
                     }
 
                     System.out.println("  ✓ " + droneId + " takeoff sequence initiated");
@@ -1129,97 +1190,6 @@ public class Application3D implements CommandLineRunner {
 
         System.out.println("\n========================================");
         System.out.println("Takeoff sequence completed");
-        System.out.println("========================================\n");
-    }
-
-    /** Wait for controller-confirmed takeoff before requesting a shared operating height. */
-    private void performCollectiveAscent() {
-        if (!collectiveAscentEnabled) {
-            return;
-        }
-        if (!droneControlEnabled) {
-            System.out.println("[Collective Ascent] Skipped: drone control not enabled");
-            return;
-        }
-        if (!rosUpdateEnabled) {
-            System.out.println("[Collective Ascent] Skipped: ROS updates disabled (no altitude feedback)");
-            return;
-        }
-
-        System.out.println("\n========================================");
-        System.out.println("[Collective Ascent] Raising all UAS to operating altitude "
-                + String.format(Locale.ROOT, "%.2f", collectiveAscentAltitude) + "m");
-        System.out.println("========================================");
-
-        long waitStart = System.currentTimeMillis();
-        while (true) {
-            int taken = 0, active = 0;
-            for (int i = 0; i < configuredDroneCount; i++) {
-                if (obstacleGrids.contains(i)) {
-                    continue; 
-                }
-                active++;
-                DroneStatus st = droneStatuses.get("D" + i);
-                if (st != null && st.hasTakenOff && controllerReady("D" + i)) {
-                    taken++;
-                }
-            }
-            if (active > 0 && taken >= active) {
-                System.out.println("  ✓ All " + active + " UAS airborne, beginning collective ascent");
-                break;
-            }
-            if (System.currentTimeMillis() - waitStart > collectiveAscentTakeoffWaitMs) {
-                System.out.println("  ⚠ Timeout waiting for takeoff (" + taken + "/" + active
-                        + " airborne); proceeding with those airborne");
-                break;
-            }
-            try {
-                TimeUnit.MILLISECONDS.sleep(200);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
-
-        Set<String> ascending = new HashSet<>();
-        for (int i = 0; i < configuredDroneCount; i++) {
-            String droneId = "D" + i;
-            DroneStatus st = droneStatuses.get(droneId);
-            if (st == null || !st.hasTakenOff || !controllerReady(droneId)) {
-                continue;
-            }
-            DronePosition pos = dronePositions.get(droneId);
-            if (pos == null) {
-                System.out.println("  ⚠ " + droneId + " has no position yet, skipping ascent");
-                continue;
-            }
-            int port = droneControlStartPort + i;
-            System.out.println("  ↑ " + droneId + " ascending from "
-                    + String.format(Locale.ROOT, "%.2f", st.z) + "m to "
-                    + String.format(Locale.ROOT, "%.2f", collectiveAscentAltitude) + "m");
-            if (navigateTo(droneId, port, pos.x, pos.y, collectiveAscentAltitude)) {
-                ascending.add(droneId);
-            }
-        }
-
-        // Simulator time can run slower than wall time; never infer completion from a fixed sleep.
-        long deadline = System.currentTimeMillis() + Math.max(collectiveAscentTakeoffWaitMs, collectiveAscentSettleMs);
-        while (!ascending.isEmpty() && System.currentTimeMillis() < deadline) {
-            ascending.removeIf(id -> controllerReady(id)
-                    && Math.abs(droneStatuses.get(id).z - collectiveAscentAltitude) <= 0.10);
-            try {
-                TimeUnit.MILLISECONDS.sleep(200);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
-        if (ascending.isEmpty()) {
-            System.out.println("[Collective Ascent] Controller-confirmed ascent complete.");
-        } else {
-            System.err.println("[Collective Ascent] Still pending: " + ascending
-                    + "; navigation will wait for each controller independently.");
-        }
         System.out.println("========================================\n");
     }
 
@@ -1260,7 +1230,7 @@ public class Application3D implements CommandLineRunner {
         return createDirectionalMoveRule(droneId, routeType);
     }
 
-    /** Absolute mode targets a layer height; relative mode offsets the measured altitude. */
+    /** Absolute mode aligns to base-altitude + layer * layerHeight; relative mode offsets the measured altitude. */
     private double computeTargetZ(MoveDirection direction, DroneStatus status, GridPoint nextPoint) {
         boolean vertical = (direction == MoveDirection.UP || direction == MoveDirection.DOWN);
 
@@ -1289,7 +1259,7 @@ public class Application3D implements CommandLineRunner {
         return targetZ;
     }
 
-    /** Reserve/check the orthogonal sweep cells as well as the diagonal destination. */
+    /** A diagonal move also requires both swept orthogonal cells to be free of obstacles, occupants and reservations. */
     private boolean isDiagonalPathClear(String droneId, GridPoint current, GridPoint next, MoveDirection direction) {
         if (!(direction == MoveDirection.FORWARD_LEFT ||
                 direction == MoveDirection.FORWARD_RIGHT ||
@@ -1329,11 +1299,12 @@ public class Application3D implements CommandLineRunner {
         }
 
         for (int idx : cellsToCheck) {
-
+            // The destination is checked separately by the movement rule and reservation logic.
             if (idx == next.gridIndex) {
                 continue;
             }
 
+            // This dynamic check considers other aircraft positions only.
             for (Map.Entry<String, DronePosition> entry : dronePositions.entrySet()) {
                 String otherId = entry.getKey();
                 if (!otherId.equals(droneId)) {
@@ -1348,11 +1319,12 @@ public class Application3D implements CommandLineRunner {
                                 otherTarget = droneTargets.get(otherId);
                             }
                         }
-
+                        // Allow departure when the other aircraft is targeting our current cell.
                         if (otherTarget != null && otherTarget.gridIndex == current.gridIndex) {
                             continue;
                         }
 
+                        // Break mutual waits in favor of the smaller numeric aircraft ID.
                         DroneStatus myStatus = droneStatuses.get(droneId);
                         if (otherStatus != null && otherStatus.isWaiting
                                 && myStatus != null && myStatus.isWaiting) {
@@ -1365,6 +1337,7 @@ public class Application3D implements CommandLineRunner {
                             }
                         }
 
+                        // Release prolonged waits to prevent a permanent deadlock.
                         if (myStatus != null && myStatus.consecutiveWaitCycles >= 5) {
                             System.out.println("  [Forced Pass] " + droneId +
                                     " forced through Grid[" + idx + "] after " +
@@ -1394,7 +1367,6 @@ public class Application3D implements CommandLineRunner {
     }
 
     /** Navigation control: dynamic A* + grid reservation + wait/detour */
-    /** Plan the next move, apply the Bigraph gate, and retain reservations until arrival. */
     private void performNavigationControl() {
         if (!droneControlEnabled) {
             return;
@@ -1402,7 +1374,7 @@ public class Application3D implements CommandLineRunner {
 
         long currentTime = System.currentTimeMillis();
         AbstractBigraphMatcher<PureBigraph> matcher = AbstractBigraphMatcher.create(PureBigraph.class);
-        final long WAIT_TIMEOUT = 8000;  
+        final long WAIT_TIMEOUT = 8000;
 
         for (Map.Entry<String, DroneStatus> entry : droneStatuses.entrySet()) {
             String droneId = entry.getKey();
@@ -1419,6 +1391,7 @@ public class Application3D implements CommandLineRunner {
             }
 
             try {
+                // Suspend navigation until the health-monitor thread handles the pending emergency.
 
                 boolean needsEmergency = ("Low".equals(status.batteryLevel) || "Empty".equals(status.batteryLevel)
                         || "Bad".equals(status.communicationStatus)) && !status.isInEmergency;
@@ -1460,7 +1433,7 @@ public class Application3D implements CommandLineRunner {
                         status.avoidGrids.clear();
                         status.consecutiveWaitCycles = 0;
                     } else {
-
+                        // On timeout, discard the pending move and replan from the observed position.
                         if (currentTime - status.lastMoveTime > MOVE_TIMEOUT_MS) {
                             System.out.println("  ⏱ " + droneId + " move timeout: expected Grid[" + status.movingToGrid + "], current Grid[" + currentPos.gridIndex + "], re-planning from current position");
                             releaseGrid(droneId, status.movingToGrid);
@@ -1505,7 +1478,7 @@ public class Application3D implements CommandLineRunner {
                     continue;
                 }
 
-                if (currentTime - status.lastMoveTime < 2000) { 
+                if (currentTime - status.lastMoveTime < 2000) {
                     continue;
                 }
 
@@ -1611,7 +1584,7 @@ public class Application3D implements CommandLineRunner {
                 }
 
             } catch (ClassCastException e) {
-
+                // PureBigraph.getPorts expects an EList; EMF/CDO can return an array.
                 System.err.println(" !! " + droneId + " nav: Bigraph model port structure incompatible (array vs list), skipping this cycle");
             } catch (Exception e) {
                 System.err.println(" !! " + droneId + " nav error: " + e.getMessage());
@@ -1620,7 +1593,6 @@ public class Application3D implements CommandLineRunner {
     }
 
     /** Baseline navigation: A* + diagonal check + direct REST (no Bigraph match / grid reservation / wait) */
-    /** Execute the baseline path without the Bigraph gate or reservation policy. */
     private void performBaselineNavigationControl() {
         if (!droneControlEnabled) {
             return;
@@ -1737,6 +1709,8 @@ public class Application3D implements CommandLineRunner {
                 String directionName = direction.name();
                 String navAction = directionName + " move";
 
+                // Legacy baseline skips diagonal checks, Bigraph gating and cell reservations.
+
                 logPlanningLatency(droneId, navAction, planStart, System.nanoTime());
                 System.out.println("  → [Baseline] " + droneId + " executing " + directionName + " without Bigraph check");
 
@@ -1797,7 +1771,6 @@ public class Application3D implements CommandLineRunner {
         }
     }
 
-    /** Persist the rewritten composite before subsequent decisions consume it. */
     private boolean applyRuleAndPersist(String droneId, ParametricReactionRule<PureBigraph> rule, String logPrefix) {
         return applyRuleAndPersist(droneId, rule, logPrefix, logPrefix);
     }
@@ -1829,7 +1802,7 @@ public class Application3D implements CommandLineRunner {
                     return false;
                 }
             } catch (ClassCastException e) {
-
+                // Normalize array-valued EMF/CDO references before the framework accesses ports.
                 System.err.println("  !! Bigraph model port structure incompatible (array vs list), skipping rule: " + droneId + " " + logPrefix);
                 return false;
             } catch (Exception e) {
@@ -1840,7 +1813,7 @@ public class Application3D implements CommandLineRunner {
         }
     }
 
-    /** Apply the model transition only after telemetry reports an actual ascent. */
+    /** Apply the takeoff rule after physical liftoff; updates composite and cdoIdComposed. */
     private boolean checkAndApplyTakeoffRules() {
         boolean anyRuleApplied = false;
 
@@ -1863,10 +1836,11 @@ public class Application3D implements CommandLineRunner {
 
                     ParametricReactionRule<PureBigraph> takeoffRule = droneTakeOffRule(droneId);
                     if (applyRuleAndPersist(droneId, takeoffRule, "status updated to flying", "apply takeoff rule")) {
-                        status.status = "flying"; 
+                        status.status = "flying";
                         status.takeoffRuleApplied = true;
                         anyRuleApplied = true;
                     } else {
+                        // Preserve observed flight state even when takeoff matching fails.
 
                         String reason = "";
                         if (!"Normal".equals(status.batteryLevel)) {
@@ -1892,6 +1866,7 @@ public class Application3D implements CommandLineRunner {
         return anyRuleApplied;
     }
 
+    /** Apply the landing rule after arrival and physical landing; updates composite and cdoIdComposed. */
     private boolean checkAndApplyLandingRules() {
         boolean anyRuleApplied = false;
         long currentTime = System.currentTimeMillis();
@@ -1918,13 +1893,13 @@ public class Application3D implements CommandLineRunner {
                     System.err.println(" !! Error sending landing command: " + e.getMessage());
                     e.printStackTrace();
                 }
-                continue; 
+                continue;
             }
 
             if (status.landingCommandSent && !status.landingRuleApplied) {
                 long timeSinceLandingCommand = currentTime - status.landingCommandTime;
 
-                if (timeSinceLandingCommand >= 2000 && status.hasLanded) { 
+                if (timeSinceLandingCommand >= 2000 && status.hasLanded) {
                     try {
                         System.out.println("\n [Rule Apply] " + droneId + " landed (altitude: " +
                                 String.format("%.3f", status.z) + "m), applying landing rule...");
@@ -1948,8 +1923,19 @@ public class Application3D implements CommandLineRunner {
         return anyRuleApplied;
     }
 
-    //                         curl "http://localhost:8090/inject/comm?drone=D2&state=clear"
+    /** Monitor health and apply rules independently of position updates and navigation. */
 
+    // Fault injection replaces sensor readings; rules and emergency handling use the normal path.
+
+    //
+
+    // Low battery: curl "http://localhost:8090/inject/battery?drone=D1&level=Low"
+    // Empty battery: curl "http://localhost:8090/inject/battery?drone=D1&level=Empty"
+    // Communication loss: curl "http://localhost:8090/inject/comm?drone=D2&state=Bad"
+    // Raw voltage: curl "http://localhost:8090/inject/battery?drone=D1&value=3.12"
+    // Restore real readings: curl "http://localhost:8090/inject/battery?drone=D1&level=clear"
+    //                         curl "http://localhost:8090/inject/comm?drone=D2&state=clear"
+    // Injection status: curl "http://localhost:8090/inject/status"
     private void startFaultInjectionServer() {
         if (!faultInjectionEnabled) {
             System.out.println("Fault-injection HTTP server disabled (fault.injection.enabled=false)");
@@ -1960,7 +1946,7 @@ public class Application3D implements CommandLineRunner {
             server.createContext("/inject/battery", ex -> handleInject(ex, true));
             server.createContext("/inject/comm", ex -> handleInject(ex, false));
             server.createContext("/inject/status", this::handleInjectStatus);
-            server.setExecutor(null); 
+            server.setExecutor(null);
             server.start();
             System.out.println("\n========================================");
             System.out.println("✓ Fault-injection HTTP server listening on port " + faultInjectionPort);
@@ -1998,6 +1984,7 @@ public class Application3D implements CommandLineRunner {
         respond(ex, 200, "OK: " + drone + " " + msg + "\n");
     }
 
+    /** Set a battery override; return null for an invalid value. */
     private String applyBatteryInjection(DroneStatus st, String level) {
         Double v;
         switch (level.toLowerCase(Locale.ROOT)) {
@@ -2011,10 +1998,11 @@ public class Application3D implements CommandLineRunner {
                 try { v = Double.parseDouble(level); } catch (NumberFormatException e) { return null; }
         }
         st.injectedBatteryVoltage = v;
-        st.batteryVoltage = v; 
+        st.batteryVoltage = v; // Apply immediately rather than waiting for another ROS message.
         return "battery injected -> " + String.format(Locale.ROOT, "%.2fV", v);
     }
 
+    /** Set a communication override; return null for an invalid value. */
     private String applyCommInjection(DroneStatus st, String state) {
         Integer r;
         switch (state.toLowerCase(Locale.ROOT)) {
@@ -2027,7 +2015,7 @@ public class Application3D implements CommandLineRunner {
                 try { r = Integer.parseInt(state); } catch (NumberFormatException e) { return null; }
         }
         st.injectedRssi = r;
-        st.rssi = r; 
+        st.rssi = r;
         return "comm injected -> RSSI " + r;
     }
 
@@ -2075,7 +2063,7 @@ public class Application3D implements CommandLineRunner {
             System.out.println("========================================\n");
 
             while (true) {
-                TimeUnit.MILLISECONDS.sleep(1000);  
+                TimeUnit.MILLISECONDS.sleep(1000);
 
                 if (!rosUpdateEnabled) {
                     continue;
@@ -2110,6 +2098,8 @@ public class Application3D implements CommandLineRunner {
         long timeSinceTakeoff = System.currentTimeMillis() - status.takeoffTime;
         boolean inTakeoffProtection = (timeSinceTakeoff < TAKEOFF_PROTECTION_MS) &&
                 status.takeoffCommandSent && !status.takeoffRuleApplied;
+
+        // Apply all threshold transitions in one cycle so Empty triggers landing instead of a Low return.
 
         boolean changed = true;
         while (changed) {
@@ -2168,13 +2158,14 @@ public class Application3D implements CommandLineRunner {
         status.communicationRuleApplied = true;
     }
 
-    /** Allow an existing emergency to escalate to local landing when the battery is empty. */
     private void checkAndTriggerEmergencyResponse(String droneId, DroneStatus status) {
         if (!status.hasTakenOff) return;
 
         boolean lowBattery = "Low".equals(status.batteryLevel);
         boolean emptyBattery = "Empty".equals(status.batteryLevel);
         boolean badComm = "Bad".equals(status.communicationStatus);
+
+        // An Empty battery escalates an existing return mission to an immediate landing.
 
         if (status.isInEmergency) {
             boolean alreadyLanding = "EMPTY_BATTERY".equals(status.emergencyType)
@@ -2268,7 +2259,6 @@ public class Application3D implements CommandLineRunner {
         System.out.println("  → Start Point: " + startPoint);
     }
 
-    /** Cancel the old motion before releasing its reservations and choosing a new target. */
     private boolean setEmergencyState(String droneId, DroneStatus status, String type, GridPoint target) {
         int port = droneControlStartPort + Integer.parseInt(droneId.substring(1));
         if (!sendDroneControlRequest(droneId, port, "/stop_controller", "Holding before emergency reroute.", "emergency hold")) {
@@ -2318,6 +2308,12 @@ public class Application3D implements CommandLineRunner {
             System.out.println("📡 [INFO] " + droneId + " Comm recovered, continuing home");
         }
     }
+
+    // ========================================
+
+    // ========================================
+
+    // Reuse one ROSBridge WebSocket across all aircraft and topic subscriptions.
 
     private Ros sharedRos;
 
@@ -2386,7 +2382,7 @@ public class Application3D implements CommandLineRunner {
         System.out.println("✓ Initialized default positions and status for " + configuredDroneCount + " drones");
 
         if (rosSimMode) {
-
+            // Simulation: identify aircraft by poses[].header.frame_id in /cf_positions_path (nav_msgs/Path).
             subscribeRosTopic(rosBridgeHost, "/cf_positions_path", "nav_msgs/Path", message -> {
                 try {
                     JsonObject jsonObject = message.toJsonObject();
@@ -2434,7 +2430,7 @@ public class Application3D implements CommandLineRunner {
                             status.z = z;
                             final long TAKEOFF_COOLDOWN = 5000;
                             long timeSinceTakeoff = System.currentTimeMillis() - status.takeoffTime;
-                            if (!status.hasTakenOff && DroneControllerSync.hasLiftedOff(
+                            if (!status.hasTakenOff && hasLiftedOff(
                                     status.takeoffCommandSent, status.takeoffStartZ, z)) {
                                 status.hasTakenOff = true;
                                 status.takeoffTime = System.currentTimeMillis();
@@ -2461,7 +2457,7 @@ public class Application3D implements CommandLineRunner {
                 }
             });
         } else {
-
+            // Hardware: subscribe to each aircraft's /cfXXX/pose.
             for (int i = 0; i < configuredDroneCount; i++) {
                 int droneIndex = i;
                 String droneId = "D" + i;
@@ -2487,7 +2483,7 @@ public class Application3D implements CommandLineRunner {
                         final long TAKEOFF_COOLDOWN = 5000;
                         long timeSinceTakeoff = System.currentTimeMillis() - status.takeoffTime;
 
-                        if (!status.hasTakenOff && DroneControllerSync.hasLiftedOff(
+                        if (!status.hasTakenOff && hasLiftedOff(
                                 status.takeoffCommandSent, status.takeoffStartZ, z)) {
                             status.hasTakenOff = true;
                             status.takeoffTime = System.currentTimeMillis();
@@ -2533,7 +2529,7 @@ public class Application3D implements CommandLineRunner {
 
                         DroneStatus status = droneStatuses.get(droneId);
                         if (status != null) {
-
+                            // Synthetic overrides take precedence until cleared.
                             status.batteryVoltage = (status.injectedBatteryVoltage != null)
                                     ? status.injectedBatteryVoltage : batteryVoltage;
                             status.rssi = (status.injectedRssi != null)
@@ -2549,7 +2545,7 @@ public class Application3D implements CommandLineRunner {
         System.out.println("========================================\n");
     }
 
-    /** Round XY to grid centers, floor Z by layer height, and flatten in layer/X/Y order. */
+    /** Convert world coordinates to a cell index; return -1 outside the grid. XY centers use origin + index * step; Z uses floor((z-originZ)/layerHeight). Index = layer*(cols*rows) + xIndex*rows + yIndex. */
     private int coordinateToGridIndex(double x, double y, double z) {
 
         final double EPSILON = 1e-6;
@@ -2573,7 +2569,7 @@ public class Application3D implements CommandLineRunner {
         if (xIndex < 0 || xIndex >= bigridCols ||
                 yIndex < 0 || yIndex >= bigridRows ||
                 layerIndex < 0 || layerIndex >= bigridLayers) {
-            return -1; 
+            return -1;
         }
 
         int index = layerIndex * (bigridCols * bigridRows) + xIndex * bigridRows + yIndex;
@@ -2585,6 +2581,13 @@ public class Application3D implements CommandLineRunner {
 
     //  */
     // @Deprecated
+    // private int coordinateToGridIndex(double x, double y) {
+    //     return coordinateToGridIndex(x, y, 0.0);
+    // }
+
+    // ========================================
+
+    // ========================================
 
     private void parseDroneTargets() {
         System.out.println("\n========================================");
@@ -2651,7 +2654,9 @@ public class Application3D implements CommandLineRunner {
                     double x = Double.parseDouble(coords[0].trim());
                     double y = Double.parseDouble(coords[1].trim());
 
-                    double targetZ = gridOriginZ;  
+                    // Legacy XY targets use layer 0 for indexing; navigation determines the flight altitude.
+
+                    double targetZ = gridOriginZ;
                     int gridIndex = coordinateToGridIndex(x, y, targetZ);
 
                     String droneId = "D" + i;
@@ -2659,6 +2664,7 @@ public class Application3D implements CommandLineRunner {
                     droneTargets.put(droneId, new GridPoint(x, y, targetZ, gridIndex));
                     System.out.println("  " + droneId + " target: (" + x + ", " + y + ") -> Grid[" + gridIndex + "] (Layer 1)");
 
+                    // Record the observed start cell instead of assuming the aircraft index is its cell.
                     DroneStatus status = droneStatuses.get(droneId);
                     DronePosition currentPos = dronePositions.get(droneId);
                     if (status != null) {
@@ -2700,6 +2706,7 @@ public class Application3D implements CommandLineRunner {
         return new GridPoint(x, y, z, gridIndex);
     }
 
+    /** Eight horizontal neighbors and two vertical neighbors. */
     private List<GridPoint> getNeighbors(int gridIndex) {
         List<GridPoint> neighbors = new ArrayList<>();
 
@@ -2711,14 +2718,14 @@ public class Application3D implements CommandLineRunner {
         int yIndex = indexInLayer % bigridRows;
 
         int[][] horizontalDirections = {
-                {-1, 0, 0},  
-                {1, 0, 0},   
-                {0, -1, 0},  
-                {0, 1, 0},   
-                {-1, -1, 0}, 
-                {-1, 1, 0},  
-                {1, -1, 0},  
-                {1, 1, 0}    
+                {-1, 0, 0},
+                {1, 0, 0},
+                {0, -1, 0},
+                {0, 1, 0},
+                {-1, -1, 0},
+                {-1, 1, 0},
+                {1, -1, 0},
+                {1, 1, 0}
         };
 
         for (int[] dir : horizontalDirections) {
@@ -2760,13 +2767,15 @@ public class Application3D implements CommandLineRunner {
         return Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2) + Math.pow(a.z - b.z, 2));
     }
 
+    /** Replan before each legacy move; return the next cell, or null when no path exists. */
     private GridPoint planNextStep(String droneId, GridPoint start, GridPoint goal) {
         if (start.gridIndex == goal.gridIndex) {
-            return null;  
+            return null;
         }
 
         Set<Integer> occupiedGrids = getOccupiedGrids(droneId);
 
+        // Temporarily avoid previously blocked cells; entries expire after 30 seconds.
         DroneStatus planStatus = droneStatuses.get(droneId);
         if (planStatus != null && !planStatus.avoidGrids.isEmpty()) {
             if (System.currentTimeMillis() - planStatus.avoidGridsSetTime < 30000) {
@@ -2795,13 +2804,12 @@ public class Application3D implements CommandLineRunner {
         }
 
         if (fullPath.isEmpty() || fullPath.size() < 2) {
-            return null;  
+            return null;
         }
 
         return fullPath.get(1);
     }
 
-    /** A* uses the current occupancy and reservation snapshot. */
     private List<GridPoint> planPath(GridPoint start, GridPoint goal, Set<Integer> occupiedGrids) {
         PriorityQueue<AStarNode> openSet = new PriorityQueue<>();
         Set<Integer> closedSet = new HashSet<>();
@@ -2835,11 +2843,11 @@ public class Application3D implements CommandLineRunner {
 
                 double moveCost;
                 if (isDiagonalXY && !isVertical) {
-                    moveCost = Math.sqrt(2);  
+                    moveCost = Math.sqrt(2);
                 } else if (isVertical && !isDiagonalXY) {
-                    moveCost = 1.5;  
+                    moveCost = 1.5;
                 } else {
-                    moveCost = 1.0;  
+                    moveCost = 1.0;
                 }
 
                 double tentativeGScore = current.gCost + moveCost;
@@ -2859,12 +2867,13 @@ public class Application3D implements CommandLineRunner {
         List<GridPoint> path = new ArrayList<>();
         AStarNode current = node;
         while (current != null) {
-            path.add(0, current.point);  
+            path.add(0, current.point);
             current = current.parent;
         }
         return path;
     }
 
+    /** Other aircraft positions, static obstacles and other aircraft reservations are blocked. */
     private Set<Integer> getOccupiedGrids(String excludeDroneId) {
         Set<Integer> occupied = new HashSet<>();
 
@@ -2889,7 +2898,10 @@ public class Application3D implements CommandLineRunner {
         return occupied;
     }
 
-    /** Atomically reject reservations owned or occupied by another drone. */
+    // ========================================
+
+    // ========================================
+
     private boolean tryReserveGrid(String droneId, int gridIndex) {
         GridReservation existingReservation = gridReservations.get(gridIndex);
 
@@ -2902,6 +2914,7 @@ public class Application3D implements CommandLineRunner {
             return false;
         }
 
+        // Atomically claim an unreserved cell.
         GridReservation newReservation = new GridReservation(droneId, System.currentTimeMillis());
         GridReservation previous = gridReservations.putIfAbsent(gridIndex, newReservation);
 
@@ -2928,7 +2941,10 @@ public class Application3D implements CommandLineRunner {
         return (reservation != null) ? reservation.droneId : null;
     }
 
-    /** Debounce persistent same-cell occupancy independently of path authorization. */
+    // ========================================
+
+    // ========================================
+
     private void checkCollisionRisk() {
         Map<Integer, List<String>> gridOccupancy = new HashMap<>();
 
@@ -2956,6 +2972,8 @@ public class Application3D implements CommandLineRunner {
             }
         }
 
+        // Count only sustained overlaps of at least two airborne aircraft; ignore ground spawn overlaps.
+
         for (Integer gridIndex : currentViolatingGrids) {
             long airborneOccupants = violatingOccupants.get(gridIndex).stream()
                     .filter(id -> {
@@ -2965,6 +2983,7 @@ public class Application3D implements CommandLineRunner {
                     .count();
             if (airborneOccupants < 2) {
 
+                // Risk detection and pausing still use the unfiltered observations.
                 coOccupancyStreak.remove(gridIndex);
                 continue;
             }
@@ -3030,7 +3049,6 @@ public class Application3D implements CommandLineRunner {
      * at most once, whether triggered by normal completion or by the JVM shutdown hook (Ctrl+C).
      * @param runStatus "complete" (all drones landed) or "interrupted" (JVM exiting early)
      */
-    /** Keep JSON field names stable for downstream analysis. */
     private void writeMissionReport(String runStatus) {
         if (!missionReportPrinted.compareAndSet(false, true)) {
             return;
@@ -3172,7 +3190,6 @@ public class Application3D implements CommandLineRunner {
         }
     }
 
-    /** Use the latest telemetry; only pre-takeoff out-of-grid positions use the fallback cell. */
     private PureBigraph droneModelFromRosPositions(int siteCount) throws InvalidConnectionException, TypeNotExistsException, IncompatibleSignatureException, IncompatibleInterfaceException {
         if (!rosUpdateEnabled || dronePositions.isEmpty()) {
 
@@ -3181,7 +3198,7 @@ public class Application3D implements CommandLineRunner {
 
         if (collisionRiskDetected.get()) {
             System.err.println("⚠ Collision risk detected, using previous drone model");
-            return dronePart; 
+            return dronePart;
         }
 
         List<Bigraph<DynamicSignature>> placements = new ArrayList<>();
@@ -3197,6 +3214,8 @@ public class Application3D implements CommandLineRunner {
         Set<Integer> placedCells = new HashSet<>();
         for (DronePosition pos : dronePositions.values()) {
             int placeIndex = pos.gridIndex;
+
+            // Out-of-grid start-cell fallback is allowed only before takeoff, never during flight.
 
             if ((placeIndex < 0 || placeIndex >= siteCount) && allowOutOfGridPlacement) {
                 DroneStatus st = droneStatuses.get(pos.droneId);
@@ -3217,13 +3236,13 @@ public class Application3D implements CommandLineRunner {
                     continue;
                 }
 
-                String droneStatus = "Landed";  
+                String droneStatus = "Landed";
                 DroneStatus status = droneStatuses.get(pos.droneId);
                 if (status != null) {
                     if (status.landingRuleApplied) {
-                        droneStatus = "Landed";  
+                        droneStatus = "Landed";
                     } else if (status.takeoffRuleApplied) {
-                        droneStatus = "flying";  
+                        droneStatus = "flying";
                     }
                 }
 
@@ -3238,6 +3257,7 @@ public class Application3D implements CommandLineRunner {
         return (PureBigraph) result;
     }
 
+    /** Prefer the recorded start cell, then the aircraft-index cell; return -1 if neither is valid. */
     private int fallbackGridIndex(String droneId, int siteCount) {
         DroneStatus status = droneStatuses.get(droneId);
         if (status != null && status.startGridIndex != null
@@ -3289,7 +3309,7 @@ public class Application3D implements CommandLineRunner {
         volatile double batteryVoltage = 4.2;
         volatile int rssi;
         volatile String batteryLevel = "Normal", communicationStatus = "Normal";
-
+        // Non-null values override real ROS health readings until cleared.
         volatile Double injectedBatteryVoltage = null;
         volatile Integer injectedRssi = null;
         volatile boolean batteryRuleApplied, communicationRuleApplied, bigraphBatteryNeedsSync;
@@ -3341,8 +3361,8 @@ public class Application3D implements CommandLineRunner {
     private static class AStarNode implements Comparable<AStarNode> {
         final GridPoint point;
         final AStarNode parent;
-        final double gCost;  
-        final double hCost;  
+        final double gCost;
+        final double hCost;
         final double fCost;  // gCost + hCost
 
         AStarNode(GridPoint point, AStarNode parent, double gCost, double hCost) {
@@ -3360,8 +3380,8 @@ public class Application3D implements CommandLineRunner {
     }
 
     private static class GridReservation {
-        final String droneId;           
-        final long reservationTime;     
+        final String droneId;
+        final long reservationTime;
 
         GridReservation(String droneId, long reservationTime) {
             this.droneId = droneId;

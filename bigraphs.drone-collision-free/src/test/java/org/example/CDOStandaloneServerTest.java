@@ -15,7 +15,7 @@ public class CDOStandaloneServerTest {
     @Test
     @EnabledIfSystemProperty(named = "runDisabledTests", matches = "true")
     void run_server_test_01() throws Exception {
-        CDOStandaloneServer server = new CDOStandaloneServer("repo1"); // Start a local headless CDO server instance named repo1, for use by Spring Data CDO
+        CDOStandaloneServer server = new CDOStandaloneServer("repo1");
         CDOStandaloneServer.start(server);
     }
 

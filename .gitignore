@@ -6,3 +6,6 @@
 **/build/
 **/install/
 **/*:Zone.Identifier
+
+# Hardware dependencies are installed separately from upstream.
+/cps.asset.crazyflie/simulation/simulation-crazyswarm2/

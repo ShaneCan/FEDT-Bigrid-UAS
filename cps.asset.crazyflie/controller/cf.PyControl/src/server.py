@@ -30,7 +30,7 @@ def create_app(controller, web_root=None):
     app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
     app.config["CONTROLLER"] = controller
 
-    def data():
+    def data(allowed=None):
         value = request.get_json(silent=True)
         if value is None:
             if request.data and request.data.strip() not in (b"", b"{}"):
@@ -38,6 +38,8 @@ def create_app(controller, web_root=None):
             return {}
         if not isinstance(value, dict):
             raise ValueError("Expected a JSON object")
+        if allowed is not None and value.keys() - allowed:
+            raise ValueError("Unsupported fields: " + ", ".join(sorted(value.keys() - allowed)))
         return value
 
     def coordinates(payload):
@@ -78,7 +80,7 @@ def create_app(controller, web_root=None):
         backend = getattr(controller.transport, "backend", "test")
         return jsonify(drone_id=controller.drone_id, backend="ros2", execution_backend=backend,
                        clock_type=controller.snapshot()["clock_type"],
-                       features=["native_trajectory", "full_state", "host_trajectory_cache", "stop_and_hold", "world_velocity"],
+                       features=["native_trajectory", "full_state", "host_trajectory_cache", "stop_and_hold", "world_velocity", "scheduled_full_state", "task_authorization"] + (["full_state_pauses"] if backend == "webots" else ["hardware_health"] if backend == "hardware" else []),
                        webots_motion_limits={"linear_m_s": 3.0, "angular_rad_s": 6.0} if backend == "webots" else None,
                        task_status=["queued", "running", "completed", "failed", "cancelled"],
                        trajectories="piecewise polynomial, constant coefficient first",
@@ -132,7 +134,7 @@ def create_app(controller, web_root=None):
     @app.post("/stop_controller")
     @app.post("/trajectory/stop")
     def stop():
-        task = controller.hover()
+        task = controller.stop_trajectory(data({"task_id"}).get("task_id"))
         return reply("Stop accepted; wait for the task to complete before restarting", task)
 
     @app.post("/trajectory/upload")
@@ -144,10 +146,17 @@ def create_app(controller, web_root=None):
     @app.post("/trajectory/start")
     @app.post("/trajectory/full_state/start", defaults={"full_state": True})
     def start_trajectory(full_state=False):
-        p = data()
+        p = data({"trajectory_id", "timescale", "reversed", "relative", "rate", "start_at", "require_authorization", "pauses"})
         task = controller.start_trajectory(p.get("trajectory_id", 0), p.get("timescale", 1),
-            p.get("reversed", False), p.get("relative", True), full_state, p.get("rate", 30))
+            p.get("reversed", False), p.get("relative", True), full_state, p.get("rate", 30),
+            start_at=p.get("start_at"), require_authorization=p.get("require_authorization", False), pauses=p.get("pauses"))
         return reply("Trajectory initiated", task)
+
+    @app.post("/trajectory/authorize")
+    def authorize():
+        p = data({"task_id", "expires_at"})
+        result = controller.authorize_trajectory(p["task_id"], p["expires_at"])
+        return jsonify(result)
 
     @app.get("/tasks/<task_id>")
     def task(task_id):

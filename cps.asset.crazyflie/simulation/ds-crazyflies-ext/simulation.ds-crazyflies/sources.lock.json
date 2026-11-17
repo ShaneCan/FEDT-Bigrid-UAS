@@ -1,0 +1,14 @@
+{
+  "crazyflie_interfaces": {
+    "commit": "06d94403516d1baff6d543209981483327ac157d",
+    "archive_sha256": "2b84ef75f7c64385064b918e64a19598e36950783d9124f2e8fcfc3f16aeaaaf"
+  },
+  "crazyflie_interfaces_python": {
+    "commit": "3fdce16c40545222ce3bf7ba0c439319afa9a2ab",
+    "archive_sha256": "43f5d2a759d5135b858111375b9a1d341e340d60bfb5dfcc288667d4add2dc58"
+  },
+  "crazyflie_webots": {
+    "commit": "82ad962b1728d7cc981c77437fefd63168d333af",
+    "archive_sha256": "04fb6b8d9791ec87b92e941555191f6f7eec8d0c6d09a2c2c4ea002e3addf618"
+  }
+}

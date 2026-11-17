@@ -13,6 +13,7 @@ import time
 import uuid
 
 from drone_state import DroneState
+from task_authorization import TaskAuthorization
 
 
 class ControlError(RuntimeError):
@@ -91,6 +92,32 @@ def evaluate(pieces, elapsed, timescale=1.0, reverse=False):
             "omega": [0.0, 0.0, derivative(p["poly_yaw"], 1)]}
 
 
+def normalize_pauses(windows):
+    """Absolute controller-clock windows; union overlaps before integrating time."""
+    if not isinstance(windows, list):
+        raise ValueError("pauses must be a list of start_at/end_at windows")
+    ordered = []
+    for window in windows:
+        if not isinstance(window, dict) or set(window) != {"start_at", "end_at"}:
+            raise ValueError("Each pause requires exactly start_at and end_at")
+        begin, end = finite(window["start_at"], "pause.start_at"), finite(window["end_at"], "pause.end_at")
+        if begin < 0 or end <= begin:
+            raise ValueError("Pause times require 0 <= start_at < end_at")
+        ordered.append((begin, end))
+    merged = []
+    for begin, end in sorted(ordered):
+        if merged and begin <= merged[-1]["end_at"]:
+            merged[-1]["end_at"] = max(merged[-1]["end_at"], end)
+        else:
+            merged.append(dict(start_at=begin, end_at=end))
+    return merged
+
+
+def trajectory_progress(start, now, windows):
+    blocked = sum(max(0.0, min(now, w["end_at"])-max(start, w["start_at"])) for w in windows)
+    return max(0.0, now-start-blocked), any(w["start_at"] <= now < w["end_at"] for w in windows)
+
+
 class DroneController:
     def __init__(self, drone_id, transport, image_dir=None, goal_tolerance=0.08,
                  telemetry_timeout=2.0, operation_timeout=60.0, brake_acceleration=0.5):
@@ -106,6 +133,7 @@ class DroneController:
         self._pending_trajectory = None
         self._vehicle_trajectories = set()
         self._active_trajectory = None
+        self._authorization = None
         self._holding = None
         self._streaming = False
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix=drone_id)
@@ -117,6 +145,8 @@ class DroneController:
         self._queue = deque()
         self.active_target = None
         self.telemetry = None
+        self._health = None
+        self._health_wall = None
         self._last_telemetry = None
         self._last_wall_telemetry = None
         self._initial_position = None
@@ -127,6 +157,7 @@ class DroneController:
         self._shutdown = threading.Event()
         self._disconnected_phase = "active"
         transport.on_telemetry = self.update_telemetry
+        transport.on_health = self.update_health
         self._watchdog = threading.Thread(target=self._watch_connection, daemon=True, name=f"link-{drone_id}")
         self._watchdog.start()
         self._holder = threading.Thread(target=self._hold_loop, daemon=True, name=f"hold-{drone_id}")
@@ -180,10 +211,16 @@ class DroneController:
 
     def update_telemetry(self, position, velocity=None, orientation=None, **extra):
         with self._lock:
+            received = self.transport.now()
+            source = finite(extra.pop("source_time", received), "source_time")
+            if (self._last_telemetry is not None and received >= self._last_telemetry - .1
+                    and source < self._last_telemetry - 1e-6):
+                return
             position = vector(position)
             self.telemetry = dict(position=position, velocity=vector(velocity or [0, 0, 0]),
-                                  orientation=vector(orientation or [0, 0, 0, 1], 4), **extra)
-            self._last_telemetry = self.transport.now()
+                                  orientation=vector(orientation or [0, 0, 0, 1], 4),
+                                  source_time=source, received_at=received, **extra)
+            self._last_telemetry = source
             self._last_wall_telemetry = time.monotonic()
             if self._initial_position is None:
                 self._initial_position = position[:]
@@ -198,16 +235,43 @@ class DroneController:
                     self.state.set(phase, "external_ros")
         self._changed.set()
 
+    def update_health(self, battery_voltage, rssi, pm_state, source_time=None):
+        """Status has its own freshness; odometry must never refresh battery/radio data."""
+        voltage = positive(battery_voltage, "battery_voltage")
+        if isinstance(rssi, bool) or int(rssi) != rssi or not 0 <= rssi <= 255:
+            raise ValueError("rssi must be an unsigned byte")
+        with self._lock:
+            now = self.transport.now()
+            if source_time is not None:
+                source_time = finite(source_time, "health source time")
+                previous = self._health and self._health.get("source_time")
+                if source_time > now + .1 or (previous and 0 < source_time < previous):
+                    return
+            self._health = dict(battery_voltage=voltage, rssi=int(rssi), pm_state=int(pm_state),
+                                received_at=now, source_time=source_time)
+            self._health_wall = time.monotonic()
+
     def snapshot(self):
         with self._lock:
+            health = copy.deepcopy(self._health)
+            if health is not None:
+                age = self.transport.now() - health["received_at"]
+                if health.get("source_time", 0):
+                    age = max(age, self.transport.now() - health["source_time"])
+                if not getattr(self.transport, "use_sim_time", False):
+                    age = max(age, time.monotonic() - self._health_wall)
+                health["age"] = max(0.0, age)
             return dict(self.state.snapshot(), drone_id=self.drone_id,
+                        health=health,
                         sim_time=self.transport.now(),
                         clock_type="simulation" if getattr(self.transport, "use_sim_time", False) else "wall",
                         backend=getattr(self.transport, "backend", "test"),
                         services_ready=getattr(self.transport, "services_ready", lambda: True)(),
                         queue_length=len(self._queue), active_target=copy.deepcopy(self.active_target),
                         task_id=self._current, telemetry=copy.deepcopy(self.telemetry),
-                        connected=self._fresh())
+                        connected=self._fresh(),
+                        telemetry_age=None if self._last_telemetry is None else self.transport.now()-self._last_telemetry,
+                        authorization=self._authorization.snapshot() if self._authorization else None)
 
     def task(self, task_id):
         with self._lock:
@@ -217,7 +281,7 @@ class DroneController:
 
     def _fresh(self):
         return (self._last_telemetry is not None
-                and self.transport.now() - self._last_telemetry <= self.telemetry_timeout
+                and -.1 <= self.transport.now() - self._last_telemetry <= self.telemetry_timeout
                 and (getattr(self.transport, "use_sim_time", False)
                      or time.monotonic() - self._last_wall_telemetry <= self.telemetry_timeout))
 
@@ -378,6 +442,7 @@ class DroneController:
                 self._queue.clear()
                 self.active_target = None
                 self._active_trajectory = None
+                self._pending_trajectory = None
             self._holding = None
             if release:
                 self.transport.command("notify_setpoints_stop", remain_valid_millisecs=0)
@@ -386,6 +451,23 @@ class DroneController:
         if self._wall:
             self._wall.stop()
             self._wall = None
+
+    def stop_trajectory(self, task_id=None):
+        with self._commands:
+            with self._lock:
+                if task_id is not None and task_id != self._current:
+                    raise ControlError("Stop targets a stale task")
+            return self.hover()
+
+    def authorize_trajectory(self, task_id, expires_at):
+        with self._lock:
+            authorization = self._authorization
+            if (authorization is None or task_id != self._current or task_id != authorization.task_id
+                    or self._tasks[task_id]["status"] not in ("queued", "running")
+                    or authorization.reason is not None):
+                raise ControlError("Permission targets a stale or unauthorized task")
+            authorization.authorize(expires_at, self.transport.now())
+            return authorization.snapshot()
 
     def hover(self, target=None, yaw=None):
         position = self._position()
@@ -499,17 +581,35 @@ class DroneController:
             self._vehicle_trajectories.discard(trajectory_id)
         self._trajectories[trajectory_id] = updated
 
+    def _authorized_reference(self, authorization, task_id, cancel, now):
+        if authorization is None:
+            return True
+        with self._lock:
+            reason = authorization.check(now)
+        if not reason:
+            return True
+        with self._commands:
+            with self._lock:
+                if cancel.is_set() or self._current != task_id:
+                    raise InterruptedError()
+            authorization.reason = reason
+            stop_task = self.hover()
+            with self._lock:
+                authorization.stop_task_id = stop_task
+                self._tasks[task_id].update(stop_reason=reason, stop_task_id=stop_task)
+        return False
+
     def start_trajectory(self, trajectory_id=0, timescale=1.0, reverse=False,
-                         relative=True, full_state=False, rate=30.0):
+                         relative=True, full_state=False, rate=30.0, start_at=None, require_authorization=False, pauses=None):
         with self._uploads:
             self._pending_trajectory = int(trajectory_id)
             try:
-                return self._start_trajectory(trajectory_id, timescale, reverse, relative, full_state, rate)
+                return self._start_trajectory(trajectory_id, timescale, reverse, relative, full_state, rate, start_at, require_authorization, pauses)
             except Exception:
                 self._pending_trajectory = None
                 raise
 
-    def _start_trajectory(self, trajectory_id, timescale, reverse, relative, full_state, rate):
+    def _start_trajectory(self, trajectory_id, timescale, reverse, relative, full_state, rate, start_at=None, require_authorization=False, pauses=None):
         timescale, rate = positive(timescale, "timescale"), positive(rate, "rate")
         if rate > 200:
             raise ValueError("rate must be <= 200 Hz")
@@ -533,11 +633,24 @@ class DroneController:
             raise ControlError("Absolute trajectory must start at the current hovering position")
         offset = [position[i] - initial[i] for i in range(3)] if relative else [0, 0, 0]
         total = sum(p["duration"] for p in pieces) * timescale
+        if pauses is not None and (not full_state or getattr(self.transport, "backend", None) != "webots"):
+            raise ValueError("pauses require Webots FullState")
+        windows = normalize_pauses(pauses) if pauses is not None else []
+        scheduled = finite(start_at, "start_at") if start_at is not None else None
+        if scheduled is not None and (not full_state or not self.transport.now()+.05 <= scheduled <= self.transport.now()+30):
+            raise ValueError("start_at requires FullState and must be .05..30 clock seconds ahead")
+        if not isinstance(require_authorization, bool) or (require_authorization and not full_state):
+            raise ValueError("require_authorization must be boolean and requires FullState")
+        authorization = TaskAuthorization() if require_authorization else None
         final = evaluate(pieces, total, timescale, reverse)["position"]
         target = [final[i] + offset[i] for i in range(3)]
         def fly(cancel):
-            self.active_target = target
-            self._active_trajectory = trajectory_id
+            with self._lock:
+                if cancel.is_set():
+                    raise InterruptedError()
+                task_id = self._current
+                self.active_target = target
+                self._active_trajectory = trajectory_id
             try:
                 if not full_state:
                     self._send(cancel, "start_trajectory", trajectory_id=trajectory_id,
@@ -546,28 +659,59 @@ class DroneController:
                 with self._uploads:
                     if self._pending_trajectory == trajectory_id:
                         self._pending_trajectory = None
-            start = self.transport.now()
+            start = scheduled if scheduled is not None else self.transport.now()
+            while self.transport.now() < start:
+                self._position()
+                if cancel.wait(.005):
+                    raise InterruptedError()
+            if scheduled is not None and self.transport.now()-start > .1:
+                raise ControlError("Scheduled trajectory start missed its deadline")
             with self._lock:
                 if cancel.is_set():
                     raise InterruptedError()
-                self._tasks[self._current]["trajectory_started_at"] = start
+                self._tasks[task_id]["trajectory_started_at"] = self.transport.now()
+                self._tasks[task_id]["trajectory_epoch"] = start
             next_send = start
-            while not cancel.is_set() and self.transport.now() - start < total:
+            while not cancel.is_set():
                 self._position()
                 now = self.transport.now()
+                elapsed, paused = trajectory_progress(start, now, windows)
+                if elapsed >= total:
+                    break
+                with self._lock:
+                    self._tasks[task_id].update(trajectory_elapsed=elapsed, trajectory_paused=paused)
                 if full_state and now >= next_send:
-                    sample = evaluate(pieces, now - start, timescale, reverse)
+                    sample = evaluate(pieces, elapsed, timescale, reverse)
+                    if paused:
+                        for key in ("velocity", "acceleration", "omega"):
+                            sample[key] = [0.0, 0.0, 0.0]
                     sample["position"] = [sample["position"][i] + offset[i] for i in range(3)]
+                    if not self._authorized_reference(authorization, task_id, cancel, now):
+                        return "hovering"
                     self._publish_reference(cancel, sample)
                     next_send = now + 1.0 / rate
                 cancel.wait(0.005)
             if cancel.is_set():
                 raise InterruptedError()
+            with self._lock:
+                self._tasks[task_id].update(trajectory_elapsed=total, trajectory_paused=False)
             if full_state:
-                self._set_hold(cancel, target, evaluate(pieces, total, timescale, reverse)["yaw"])
+                final_sample = evaluate(pieces, total, timescale, reverse)
+                final_sample["position"] = target
+                if not self._authorized_reference(authorization, task_id, cancel, self.transport.now()):
+                    return "hovering"
+                self._set_hold(cancel, target, final_sample["yaw"])
             self._wait_goal(cancel, target)
-        return self._submit("full_state" if full_state else "trajectory",
-                            "full_state" if full_state else "trajectory", fly)
+        with self._lock:
+            task = self._submit("full_state" if full_state else "trajectory",
+                                "full_state" if full_state else "trajectory", fly)
+            if authorization is not None:
+                authorization.task_id = task
+            self._authorization = authorization
+            self._tasks[task].update(trajectory_id=trajectory_id, trajectory_epoch=scheduled,
+                                     require_authorization=require_authorization,
+                                     trajectory_pauses=copy.deepcopy(windows))
+            return task
 
     def start_wall_follow(self, data):
         if self.state.phase != "hovering":
@@ -622,6 +766,7 @@ class RosTransport:
         self.backend = backend or ("webots" if use_sim_time else "hardware")
         self.node = Node(f"http_{drone_id}", parameter_overrides=[Parameter("use_sim_time", value=use_sim_time)])
         self.on_telemetry = None
+        self.on_health = None
         self._clients, self._publishers = {}, {}
         self._rpc_lock = threading.RLock()
         self._upload_rpc_lock = threading.RLock()
@@ -647,9 +792,11 @@ class RosTransport:
         services = dict(self.node.get_service_names_and_types())
         ready = all(f"/{self.drone_id}/{name}" in services for name in
                     ("takeoff", "land", "go_to", "notify_setpoints_stop", "upload_trajectory", "start_trajectory"))
-        if self.backend == "hardware":
+        if self.require_report:
             ready = ready and self.node.count_publishers(f"/{self.drone_id}/control_result") > 0
+        if self.backend == "hardware":
             ready = ready and self.node.count_subscribers(f"/{self.drone_id}/cmd_velocity_world") > 0
+            ready = ready and self.node.count_subscribers(f"/{self.drone_id}/cmd_full_state") > 0
         return ready
 
     def _odom(self, msg):
@@ -657,17 +804,12 @@ class RosTransport:
             p, v, q = msg.pose.pose.position, msg.twist.twist.linear, msg.pose.pose.orientation
             self._orientation = [q.x, q.y, q.z, q.w]
             velocity = [v.x, v.y, v.z]
-            if self.backend == "hardware":
-                # The cflib Kalman log exposes body-frame velocity; motion
-                # planning uses world coordinates. Webots already sends world v.
-                u = [q.x, q.y, q.z]
-                def cross(a, b):
-                    return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
-                uv = cross(u, velocity)
-                uuv = cross(u, uv)
-                velocity = [velocity[i]+2*q.w*uv[i]+2*uuv[i] for i in range(3)]
+            # Upstream Crazyswarm2 1.0.7 (cpp) logs stateEstimateZ velocity
+            # in world coordinates, as does Webots. Do not rotate it again.
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9 if hasattr(msg, "header") else 0
+            timing = {"source_time": stamp} if stamp > 0 else {}
             self.on_telemetry(position=[p.x, p.y, p.z], velocity=velocity,
-                              orientation=[q.x, q.y, q.z, q.w], **self._sensors)
+                              orientation=[q.x, q.y, q.z, q.w], **timing, **self._sensors)
 
     def _scan(self, msg):
         self._sensors["scan"] = dict(angle_min=msg.angle_min, angle_max=msg.angle_max,
@@ -677,6 +819,11 @@ class RosTransport:
     def _status(self, msg):
         self._sensors["battery"] = float(msg.battery_voltage)
         self._sensors["pm_state"] = int(msg.pm_state)
+        if self.on_health:
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
+            # pm.vbatMV has millivolt resolution; undo float32 noise at policy boundaries.
+            self.on_health(battery_voltage=round(float(msg.battery_voltage), 3), rssi=int(msg.rssi),
+                           pm_state=int(msg.pm_state), source_time=stamp)
 
     def _control_result(self, msg):
         try:
@@ -763,8 +910,7 @@ class RosTransport:
             raise RuntimeError(f"ROS service {name} failed")
         if hasattr(response, "success") and not response.success:
             raise ControlError(getattr(response, "message", "ROS command rejected"), 400)
-        if ((self.require_report and name in ("takeoff", "land", "go_to", "upload_trajectory", "start_trajectory"))
-                or (self.backend == "hardware" and name == "upload_trajectory")):
+        if self.require_report and name in ("takeoff", "land", "go_to", "upload_trajectory", "start_trajectory"):
             with self._report_ready:
                 if not self._report_ready.wait_for(lambda: self._reports.get(name, (0, None))[0] > report_before, timeout=2):
                     raise TimeoutError(f"Missing execution acknowledgement for {name}")
