@@ -3,7 +3,7 @@
 # FEDT-Bigraph-UAS
 
 [![Project Page](https://img.shields.io/badge/🌐_Project_Page-1f6feb?style=flat-square)](https://shanecan.github.io/FEDT-Bigrid-UAS/)
-[![Video](https://img.shields.io/badge/📺_Video-FF0000?style=flat-square)](https://www.youtube.com/watch?v=338XnNnXHFI)
+[![Video](https://img.shields.io/badge/📺_Video-FF0000?style=flat-square)](https://youtu.be/FBFthZUpgag)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 [![ROS 2](https://img.shields.io/badge/ROS_2-Humble-22314E?style=flat-square&logo=ros)](https://docs.ros.org/)
 [![BigraphER](https://img.shields.io/badge/BigraphER-2.0.0-5b21b6?style=flat-square)](https://www.dcs.gla.ac.uk/~michele/bigrapher.html)
