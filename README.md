@@ -1,15 +1,11 @@
-
-
 # FEDT-Bigraph-UAS
 
-[![Project Page](https://img.shields.io/badge/🌐_Project_Page-1f6feb?style=flat-square)](https://shanecan.github.io/FEDT-Bigrid-UAS/)
-[![Video](https://img.shields.io/badge/📺_Video-FF0000?style=flat-square)](https://youtu.be/FBFthZUpgag)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
-[![ROS 2](https://img.shields.io/badge/ROS_2-Humble-22314E?style=flat-square&logo=ros)](https://docs.ros.org/)
-[![BigraphER](https://img.shields.io/badge/BigraphER-2.0.0-5b21b6?style=flat-square)](https://www.dcs.gla.ac.uk/~michele/bigrapher.html)
-[![PRISM](https://img.shields.io/badge/PRISM-4.9-0e7490?style=flat-square)](https://www.prismmodelchecker.org/)
-
-
+![Project Page](https://img.shields.io/badge/🌐_Project_Page-1f6feb?style=flat-square)
+![Video](https://img.shields.io/badge/📺_Video-FF0000?style=flat-square)
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)
+![ROS 2](https://img.shields.io/badge/ROS_2-Humble-22314E?style=flat-square&logo=ros)
+![BigraphER](https://img.shields.io/badge/BigraphER-2.0.0-5b21b6?style=flat-square)
+![PRISM](https://img.shields.io/badge/PRISM-4.9-0e7490?style=flat-square)
 
 ![FEDT framework architecture](docs/static/images/framework.png)
 
@@ -31,11 +27,11 @@ This project demonstrates how Bigraphs can be used to model and control Crazyfli
 1. **A unified bigraph modelling method** for UAS flight operations in discretised 3D airspace,
 
    integrating airspace topology, occupancy, adjacency, mission phase, battery state, and
-    communication state into a single executable runtime representation.
+     communication state into a single executable runtime representation.
 2. **A pre-execution verification and fail-safe mechanism** based on bigraph rewriting. Candidate
 
    movements and state transitions are executed only when their reaction-rule preconditions hold,
-    enforcing grid occupancy exclusion and logical consistency before actuation.
+     enforcing grid occupancy exclusion and logical consistency before actuation.
 3. **An end-to-end runtime assurance system** with ROS-based UAS execution, model synchronisation,
 
    and operator monitoring.
@@ -101,21 +97,15 @@ can also run in a Windows IDE or with `mvnw.cmd`.
 1. Start the backend: for Webots, run the simulator command below and wait for
 
    `READY`; for hardware, follow the [hardware setup](cps.asset.crazyflie/README.md#hardware)
-    to start the upstream radio/localization server, then `cf.PyControl`.
+     to start the upstream radio/localization server, then `cf.PyControl`.
 2. Start the grid provider for ordinary simulation or hardware:
    ```bash
-    cd bigrid-provider-service
-    ./mvnw spring-boot:run -Dspring-boot.run.arguments="--server.port=7070"
+     cd bigrid-provider-service
+     ./mvnw spring-boot:run -Dspring-boot.run.arguments="--server.port=7070"
    ```
 3. Run `org.example.Application` from `bigraphs.drone-collision-free` in your IDE,
 
    or use Maven with an explicit main class:
-
-   ```bash
-   cd bigraphs.drone-collision-free
-   ./mvnw spring-boot:run -Dspring-boot.run.mainClass=org.example.Application \
-     -Dspring-boot.run.arguments="--bigrid.service.base-url=http://127.0.0.1:7070 --cdo.enabled=false --ros.update.enabled=false"
-   ```
 
 The same arguments go in the IDE's **Program arguments** field. Select one
 profile as needed; profiles configure Java and do not switch the Webots world.
@@ -126,13 +116,6 @@ profile as needed; profiles configure Java and do not switch the Webots world.
 | `--spring.profiles.active=drift` | Two-UAS wind experiment; manually select `crazyflie2.wbt`. Uses the Webots experiment service on 5090; no grid provider, CDO or ROSBridge needed. |
 | `--spring.profiles.active=multievent` | Two-UAS wind/pause events; manually select `crazyflie2.wbt`. Same dependencies as `drift`. |
 | `--spring.profiles.active=hardware` | External Crazyswarm2 + `cf.PyControl` + grid provider on 7070. Edit the five-UAS example fleet, targets and geometry in `application-hardware.properties` for your flight area. CDO and ROSBridge are disabled. |
-
-For another profile, replace the Maven arguments with, for example,
-`-Dspring-boot.run.arguments="--spring.profiles.active=drift"`.
-Set `drone.count`, `drone.first-cf`, `drone.targets` (`x,y[,z]` entries separated
-by `;`) and `bigrid.service.*` to match the selected backend; targets must be grid
-cell centers. `ApplicationBaseline` uses the same A* + CBS planner without
-Bigraph matching/local authorization; `Application3D` is the older flow.
 
 CDO and ROSBridge are optional. To enable persistence, start CDO on 2036 from the
 Java module with `./mvnw test -DrunDisabledTests=true -Dtest=CDOStandaloneServerTest#run_server_test_01`,
