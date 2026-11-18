@@ -1,4 +1,4 @@
-<h1 align="center">FEDT-Bigraph-UAS</h1>
+<h1 align="center">FEDT-Bigrid-UAS</h1>
 
 [![Project Page](https://img.shields.io/badge/🌐_Project_Page-1f6feb?style=flat-square)](https://shanecan.github.io/FEDT-Bigrid-UAS/)
 [![Video](https://img.shields.io/badge/📺_Video-FF0000?style=flat-square)](https://www.youtube.com/watch?v=FBFthZUpgag)
