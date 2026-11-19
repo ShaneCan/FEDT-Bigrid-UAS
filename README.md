@@ -1,11 +1,11 @@
 <h1 align="center">FEDT-Bigrid-UAS</h1>
 
-[![Project Page](https://img.shields.io/badge/🌐_Project_Page-1f6feb?style=flat-square)](https://shanecan.github.io/FEDT-Bigrid-UAS/)
+<h1 align="center">[![Project Page](https://img.shields.io/badge/🌐_Project_Page-1f6feb?style=flat-square)](https://shanecan.github.io/FEDT-Bigrid-UAS/)
 [![Video](https://img.shields.io/badge/📺_Video-FF0000?style=flat-square)](https://www.youtube.com/watch?v=FBFthZUpgag)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 [![ROS 2](https://img.shields.io/badge/ROS_2-Humble-22314E?style=flat-square&logo=ros)](https://docs.ros.org/)
 [![BigraphER](https://img.shields.io/badge/BigraphER-2.0.0-5b21b6?style=flat-square)](https://www.dcs.gla.ac.uk/~michele/bigrapher.html)
-[![PRISM](https://img.shields.io/badge/PRISM-4.9-0e7490?style=flat-square)](https://www.prismmodelchecker.org/)
+[![PRISM](https://img.shields.io/badge/PRISM-4.9-0e7490?style=flat-square)](https://www.prismmodelchecker.org/)</h1>
 
 ![FEDT framework architecture](docs/static/images/framework.png)
 
@@ -20,7 +20,7 @@ This project demonstrates how Bigraphs can be used to model and control Crazyfli
 | ![UAS operation without FEDT](docs/static/images/Without%20FEDT.gif)                         | ![UAS operation with FEDT](docs/static/images/With%20FEDT.gif)                         |
 | *Without FEDT*                                                                               | *With FEDT*                                                                            |
 | ![Bi-grid digital twin: live grid occupancy and UAS state](docs/static/images/demo-twin.gif) | ![Indoor Crazyflie testbed during a multi-UAS run](docs/static/images/demo-flight.gif) |
-| *Digital twin — live grid occupancy and UAS state*                                           | *Physical layer — indoor Crazyflie testbed*                                            |
+| *[Digital twin — live grid occupancy and UAS state](https://github.com/ShaneCan/bi-airspace-twin)*                                           | *Physical layer — indoor Crazyflie testbed*                                            |
 
 ## Contributions
 
@@ -117,8 +117,9 @@ is no longer used.
 
 ```bash
 bash cps.asset.crazyflie/controller/cf.PyControl/bin/start_dssim_docker.sh
-# Without a Webots window:
+# Without a Webots window, you can use bi-airspace-twin to monitor UAS state:
 bash cps.asset.crazyflie/controller/cf.PyControl/bin/start_dssim_docker.sh --headless
+npm run dev  # In bi-airspace-twin repo folder
 ```
 
 This mode does not require Java, Maven, CDO or the grid service. You can run
