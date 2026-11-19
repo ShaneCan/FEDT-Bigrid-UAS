@@ -1,11 +1,26 @@
 <h1 align="center">FEDT-Bigrid-UAS</h1>
 
-<h1 align="center">[![Project Page](https://img.shields.io/badge/🌐_Project_Page-1f6feb?style=flat-square)](https://shanecan.github.io/FEDT-Bigrid-UAS/)
-[![Video](https://img.shields.io/badge/📺_Video-FF0000?style=flat-square)](https://www.youtube.com/watch?v=FBFthZUpgag)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
-[![ROS 2](https://img.shields.io/badge/ROS_2-Humble-22314E?style=flat-square&logo=ros)](https://docs.ros.org/)
-[![BigraphER](https://img.shields.io/badge/BigraphER-2.0.0-5b21b6?style=flat-square)](https://www.dcs.gla.ac.uk/~michele/bigrapher.html)
-[![PRISM](https://img.shields.io/badge/PRISM-4.9-0e7490?style=flat-square)](https://www.prismmodelchecker.org/)</h1>
+<p align="center">
+  <a href="https://shanecan.github.io/FEDT-Bigrid-UAS/">
+    <img src="https://img.shields.io/badge/🌐_Project_Page-1f6feb?style=flat-square" alt="Project Page">
+  </a>
+  <a href="https://www.youtube.com/watch?v=FBFthZUpgag">
+    <img src="https://img.shields.io/badge/📺_Video-FF0000?style=flat-square" alt="Video">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License: MIT">
+  </a>
+  <a href="https://docs.ros.org/">
+    <img src="https://img.shields.io/badge/ROS_2-Humble-22314E?style=flat-square&logo=ros" alt="ROS 2">
+  </a>
+  <a href="https://www.dcs.gla.ac.uk/~michele/bigrapher.html">
+    <img src="https://img.shields.io/badge/BigraphER-2.0.0-5b21b6?style=flat-square" alt="BigraphER">
+  </a>
+  <a href="https://www.prismmodelchecker.org/">
+    <img src="https://img.shields.io/badge/PRISM-4.9-0e7490?style=flat-square" alt="PRISM">
+  </a>
+</p>
+
 
 ![FEDT framework architecture](docs/static/images/framework.png)
 
