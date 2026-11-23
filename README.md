@@ -73,7 +73,7 @@ cd FEDT-Bigrid-UAS
 ### Runtime requirements
 
 The simulator container is pinned to **Ubuntu 22.04 / ROS 2 Humble / Webots R2025a**.
-The host needs Docker Engine, Compose v2 and Python 3. A GUI requires X11 or WSLg;
+The host needs Docker Engine, Compose v2, and Python 3. A GUI requires X11 or WSLg;
 headless operation uses a private virtual display. Host ROS is not required.
 
 For the **full FEDT system**, also install **JDK 21**. Set `JAVA_HOME`
